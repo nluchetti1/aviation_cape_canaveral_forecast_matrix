@@ -1,0 +1,1093 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Cape Canaveral Aviation Weather Grid</title>
+    <style>
+        body { font-family: Arial, sans-serif; background-color: #f8fafc; color: #1e293b; margin: 15px; font-size: 0.85rem; }
+        .control-bar { display: flex; align-items: center; justify-content: space-between; background: #e2e8f0; padding: 10px; border-radius: 4px; margin-bottom: 12px; gap: 15px; }
+        .nav-links { line-height: 1.8; }
+        .nav-links span { font-weight: bold; margin-right: 5px; color: #334155; }
+        .nav-links a { margin: 0 3px; text-decoration: none; color: #2563eb; padding: 2px 5px; border-radius: 3px; transition: all 0.1s ease; cursor: pointer; }
+        .nav-links a.active { color: #ffffff; background: #2563eb; font-weight: bold; }
+        .station-selector { display: flex; align-items: center; gap: 6px; font-size: 0.85rem; font-weight: bold; background: white; padding: 4px 8px; border-radius: 4px; border: 1px solid #cbd5e1; }
+        .station-selector select { font-size: 0.85rem; font-weight: bold; color: #1e3a8a; padding: 2px 4px; cursor: pointer; border: 1px solid #cbd5e1; border-radius: 3px; }
+        .dprog-bar { background: #f1f5f9; border: 1px solid #cbd5e1; padding: 8px; border-radius: 4px; margin-bottom: 12px; display: flex; align-items: center; gap: 10px; }
+        .dprog-title { font-weight: bold; color: #475569; font-size: 0.82rem; text-transform: uppercase; }
+        .main-layout { display: flex; gap: 20px; align-items: flex-start; position: relative; }
+
+        /* High Density Table & Typography Layout */
+        .table-container { max-height: 72vh; overflow-y: auto; border: 1px solid #cbd5e1; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        table { border-collapse: collapse; background: white; width: 800px; table-layout: fixed; }
+        th { background: #2563eb; color: white; padding: 10px 8px; border: 1px solid #cbd5e1; font-size: 0.85rem; font-weight: bold; text-align: center; position: sticky; top: 0; z-index: 10; }
+        td { border: 1px solid #cbd5e1; padding: 8px 6px; text-align: center; font-family: Arial, sans-serif; font-size: 0.9rem; font-weight: 600; white-space: nowrap; position: relative; }
+        .time-col { background: #3b82f6; color: white; font-weight: bold; width: 95px; position: sticky; left: 0; }
+        .href-interactive-col { background: #f8fafc; color: #2563eb; font-weight: bold; text-decoration: underline; border-left: 2px solid #cbd5e1 !important; }
+        /* Second line inside an LLWS cell carrying the TAF WS group */
+        .taf-group { display: block; font-size: 0.66rem; font-weight: bold; letter-spacing: 0.02em; opacity: 0.92; margin-top: 1px; }
+
+        .side-panel { background: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 6px; padding: 15px; width: 360px; display: block; }
+        .legend-title { font-weight: bold; border-bottom: 1px solid #cbd5e1; padding-bottom: 5px; margin-bottom: 10px; text-align: center; font-size: 0.95rem; color: #1e293b; }
+        .legend-section-title { font-weight: bold; font-size: 0.8rem; margin: 12px 0 4px 0; color: #475569; text-transform: uppercase; letter-spacing: 0.05em; }
+        .legend-item { display: flex; justify-content: space-between; margin-bottom: 4px; padding: 6px; border-radius: 3px; font-size: 0.8rem; border: 1px solid #e2e8f0; font-weight: bold; }
+        .explanation-box { margin-top: 15px; padding-top: 10px; border-top: 1px dashed #cbd5e1; font-size: 0.78rem; line-height: 1.4; color: #475569; }
+
+        /* Threshold States */
+        .cell-vfr { background-color: transparent; color: #1e293b; font-weight: normal; }
+        .cell-mvfr { background-color: #eff6ff; color: #1e40af; }
+        .cell-ifr { background-color: #fef2f2; color: #991b1b; font-weight: bold; }
+        .cell-lifr { background-color: #ffa6a6; color: #7f0000; font-weight: bold; }
+        .cell-alert { background-color: #fef2f2; color: #dc2626; font-weight: bold; border: 1px solid #dc2626; }
+
+        /* Max Momentum Layer Wind Color Hierarchy (distinct from ceiling/vis IFR tiers) */
+        .cell-mom-20 { background-color: #ffedd5; color: #9a3412; font-weight: bold; }
+        .cell-mom-30 { background-color: #fdba74; color: #7c2d12; font-weight: bold; }
+        .cell-mom-40 { background-color: #c2410c; color: #ffffff; font-weight: bold; }
+
+        /* Low-Level Wind Shear color curve (carried over from the legacy TAF LLWS board) */
+        .cell-llws-20 { background-color: #FFC125; color: #000000; font-weight: bold; }
+        .cell-llws-30 { background-color: #CD5B45; color: #ffffff; font-weight: bold; }
+        .cell-llws-40 { background-color: #7A378B; color: #ffffff; font-weight: bold; }
+
+        /* Calibrated Thunder probability heatmap */
+        .ltg-none { background-color: #ffffff; color: #cbd5e1; }
+        .ltg-vlow { background-color: #fef9c3; color: #713f12; }
+        .ltg-low { background-color: #fef9c3; color: #854d0e; }
+        .ltg-med { background-color: #fed7aa; color: #9a3412; }
+        .ltg-high { background-color: #fca5a5; color: #991b1b; }
+
+        #hover-popup-card { position: absolute; z-index: 500; background: #ffffff; color: #1e293b; border: 2px solid #3b82f6; border-radius: 6px; padding: 12px; width: 310px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); display: none; pointer-events: none; font-size: 0.8rem; line-height: 1.4; }
+        .ltg-map-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 10px; }
+        .ltg-map-cell { border: 1px solid #e2e8f0; border-radius: 4px; overflow: hidden; background: #f8fafc; display: flex; align-items: center; justify-content: center; min-height: 80px; }
+        .ltg-map-cell img { width: 100%; height: auto; display: block; }
+        .ltg-map-empty-full { margin-top: 10px; padding: 14px; text-align: center; color: #94a3b8; font-size: 0.75rem; border: 1px dashed #cbd5e1; border-radius: 4px; }
+        .popup-header { font-weight: bold; border-bottom: 1px solid #e2e8f0; margin-bottom: 6px; padding-bottom: 4px; color: #2563eb; text-transform: uppercase; }
+        .status-banner { font-weight: bold; font-size: 0.9rem; color: #1e3a8a; margin-bottom: 12px; text-transform: uppercase; background: #dbeafe; padding: 6px; border-radius: 4px; text-align: center; }
+
+        .dprog-btn { margin: 0 3px; text-decoration: none; color: #2563eb; padding: 2px 5px; border-radius: 3px; cursor: pointer; font-size: 0.8rem; border: 1px solid #cbd5e1; background: white; }
+        .dprog-btn.active { color: white; background: #475569; font-weight: bold; }
+
+        .href-slider-panel { background: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 6px; padding: 10px 14px; margin-bottom: 12px; }
+        .href-slider-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+        .href-slider-title { font-weight: bold; color: #1e293b; font-size: 0.9rem; }
+        .href-slider-time { font-weight: bold; color: #2563eb; background: #dbeafe; padding: 3px 10px; border-radius: 4px; font-size: 0.85rem; }
+        #href-slider-input { width: 100%; margin: 4px 0 8px 0; cursor: pointer; }
+        .href-slider-controls { display: flex; justify-content: center; gap: 8px; margin-bottom: 10px; }
+        .href-slider-grid { display: grid; grid-template-columns: 1fr; grid-template-rows: 1fr; gap: 10px; max-height: calc(100vh - 230px); margin: 0 auto; justify-content: center; }
+        .href-slider-cell { border: 1px solid #cbd5e1; border-radius: 4px; background: white; overflow: hidden; text-align: center; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 0; }
+        .href-slider-cell img { max-width: 100%; max-height: calc(100vh - 300px); width: auto; height: auto; object-fit: contain; display: block; }
+        .href-slider-cell-label { font-size: 0.75rem; font-weight: bold; color: #475569; padding: 4px 0 4px 0; flex-shrink: 0; }
+        .href-slider-cell-empty { padding: 60px 10px; color: #94a3b8; font-size: 0.85rem; }
+    </style>
+</head>
+<body>
+
+    <div class="control-bar">
+        <div class="nav-links">
+            <span>Aviation:</span>
+            <a onclick="updateMetric('mom_mean')" class="active" id="nav-mom_mean">PBL Mom Mean</a>
+            <a onclick="updateMetric('mom_max')" id="nav-mom_max">PBL Mom Max</a>
+            <a onclick="updateMetric('ceiling')" id="nav-ceiling">Ceilings</a>
+            <a onclick="updateMetric('vis')" id="nav-vis">Visibility</a>
+            <a onclick="updateMetric('llws')" id="nav-llws">LLWS</a>
+            | <span>Convective:</span>
+            <a onclick="updateMetric('ct_thunder')" id="nav-ct_thunder">Cal. Thunder Map</a>
+            <a onclick="showLaunchThermo()" id="nav-launch_thermo">10Z Synoptic</a>
+        </div>
+        <div class="station-selector">
+            <label for="stn-dropdown">Station:</label>
+            <select id="stn-dropdown" onchange="activeStn = this.value; renderMatrix();">
+                <optgroup label="BUFKIT Stations">
+                    <option value="kxmr" selected>KXMR (Cape Canaveral)</option>
+                    <option value="kdab">KDAB (Daytona Beach)</option>
+                    <option value="kmlb">KMLB (Melbourne)</option>
+                    <option value="kfpr">KFPR (Fort Pierce)</option>
+                    <option value="kpbi">KPBI (West Palm Beach)</option>
+                </optgroup>
+                <optgroup label="Launch Pads (raw GRIB)">
+                    <option value="lc39a">LC-39A (KSC)</option>
+                    <option value="lc39b">LC-39B (KSC)</option>
+                    <option value="lc37">LC-37B (CCSFS)</option>
+                    <option value="slc40">SLC-40 (CCSFS)</option>
+                    <option value="slc41">SLC-41 (CCSFS)</option>
+                    <option value="lc36">LC-36 (CCSFS)</option>
+                </optgroup>
+                <optgroup label="Airfields (raw GRIB)">
+                    <option value="ktts">KTTS (KSC SLF)</option>
+                    <option value="kcof">KCOF (Patrick SFB)</option>
+                </optgroup>
+            </select>
+        </div>
+    </div>
+
+    <div class="dprog-bar">
+        <span class="dprog-title">dprog/dt Timeline:</span>
+        <div id="run-selector-container"></div>
+    </div>
+
+    <div class="status-banner" id="view-title">Loading Matrix Engine...</div>
+
+    <div class="href-slider-panel" id="href-slider-panel" style="display:none;">
+        <div class="href-slider-header">
+            <span class="href-slider-title" id="href-slider-title">HREF Calibrated Thunder &mdash; Florida Domain</span>
+            <span class="href-slider-time" id="href-slider-time">--/--Z</span>
+        </div>
+        <input type="range" id="href-slider-input" min="0" max="0" value="0" step="1" oninput="updateHrefSliderFrame(this.value)">
+        <div class="href-slider-controls">
+            <button class="dprog-btn" onclick="stepHrefSlider(-1)">&laquo; Prev Hour</button>
+            <button class="dprog-btn" onclick="toggleHrefPlay()" id="href-play-btn">&#9654; Play</button>
+            <button class="dprog-btn" onclick="stepHrefSlider(1)">Next Hour &raquo;</button>
+        </div>
+        <div class="href-slider-grid" id="href-slider-grid"></div>
+    </div>
+
+    <div class="main-layout">
+        <div id="hover-popup-card"></div>
+        <div class="table-container">
+            <table id="weather-matrix-table">
+                <thead>
+                    <tr id="matrix-header-row">
+                        </tr>
+                </thead>
+                <tbody id="matrix-body"></tbody>
+            </table>
+        </div>
+        <div class="side-panel" id="dynamic-legend-panel"></div>
+    </div>
+
+    <script>
+        let historyRuns = [];
+        let activeRunIdx = 0;
+        let hrefBlankMap = null;
+        let ct1Maps = null;
+        let ct4Maps = null;
+        let launchThermo = null;      // {site,hour,models:[...],by_model:{model:[dayRows]}}
+        let launchThermoRuns = null;  // [{timestamp, thermo}] — panel dprog/dt, current + 3 back
+        let ltRunIdx = 0;             // which run the panel is currently showing
+        let climoTables = null;       // {points, thompson, pwat, rh75} — monthly percentile dists
+        let ctWindow = '4hr';  // toggles between '4hr' and '1hr' for the persistent CT column
+        let activeMetric = 'mom_mean';
+        let activeStn = 'kxmr';
+        const popupCard = document.getElementById("hover-popup-card");
+
+        const aviationMetrics = ['mom_mean', 'mom_max', 'ceiling', 'vis', 'llws'];
+
+        // Launch pads + the two GRIB airfields (KTTS, KCOF) have no dedicated calibrated-thunder
+        // point data; they use KXMR's as a nearby proxy.
+        const PAD_IDS = ['lc39a', 'lc39b', 'lc37', 'slc40', 'slc41', 'lc36', 'ktts', 'kcof'];
+        function hrefStationFor(stn) {
+            return PAD_IDS.includes(stn.toLowerCase()) ? 'kxmr' : stn.toLowerCase();
+        }
+
+        let hrefSliderTimes = [];
+        let hrefSliderIdx = 0;
+        let hrefPlayTimer = null;
+
+        async function initDashboard() {
+            try {
+                const r = await fetch("history.json?t=" + new Date().getTime());
+                const payload = await r.json();
+                historyRuns = payload.runs || payload; // tolerate legacy flat-array format
+                hrefBlankMap = (payload.href_maps_latest && payload.href_maps_latest.blank_map) || null;
+                ct1Maps = (payload.href_maps_latest && payload.href_maps_latest.ct1_maps) || null;
+                ct4Maps = (payload.href_maps_latest && payload.href_maps_latest.ct4_maps) || null;
+                launchThermo = payload.launch_thermo || null;
+                launchThermoRuns = payload.launch_thermo_runs || null;
+                climoTables = payload.climo || null;
+
+                const countReal = (o) => !o ? 0 : Object.values(o).filter(Boolean).length;
+                console.log('[CT maps loaded] ct1:', countReal(ct1Maps),
+                            '| ct4:', countReal(ct4Maps),
+                            '| blankBasemap:', hrefBlankMap || '(none)');
+                buildTimelineNav();
+                loadRunIndex(0); // index 0 is always the most recent run
+            } catch(e) {
+                document.getElementById("view-title").innerText = "Error loading history.json pipeline";
+                console.error(e);
+            }
+        }
+
+        function buildTimelineNav() {
+            const container = document.getElementById("run-selector-container");
+            container.innerHTML = "";
+            historyRuns.forEach((run, idx) => {
+                const btn = document.createElement("button");
+                btn.className = `dprog-btn ${idx === activeRunIdx ? 'active' : ''}`;
+                btn.innerText = idx === 0 ? "Current Run" : `Run -${idx}`;
+                btn.title = run.timestamp;
+                btn.onclick = () => loadRunIndex(idx);
+                container.appendChild(btn);
+            });
+        }
+
+        function loadRunIndex(idx) {
+            activeRunIdx = idx;
+            pickDefaultCtWindow(); // prefer 4-hr, fall back to 1-hr if 4-hr isn't posted
+            buildTimelineNav();
+            renderMatrix();
+        }
+
+        function updateMetric(metricKey) {
+            activeMetric = metricKey;
+            document.querySelectorAll(".nav-links a").forEach(el => el.classList.remove("active"));
+            const targetNav = document.getElementById(`nav-${metricKey}`);
+            if (targetNav) targetNav.classList.add("active");
+            renderMatrix();
+        }
+
+        function getCellProperties(metric, val, profile) {
+            if (val === null || val === undefined) return { txt: "-", cls: "cell-vfr" };
+            let txt = typeof val === "number" ? val.toFixed(1) : val;
+
+            if (metric === 'mom_mean') {
+                if (val >= 20) return { txt: typeof val === "number" ? val.toFixed(0) + " kt" : val, cls: "cell-alert" };
+                if (val >= 15) return { txt: typeof val === "number" ? val.toFixed(0) + " kt" : val, cls: "cell-mvfr" };
+                return { txt: typeof val === "number" ? val.toFixed(0) + " kt" : val, cls: "cell-vfr" };
+            }
+            if (metric === 'mom_max') {
+                if (val >= 40) return { txt: typeof val === "number" ? val.toFixed(0) + " kt" : val, cls: "cell-mom-40" };
+                if (val >= 30) return { txt: typeof val === "number" ? val.toFixed(0) + " kt" : val, cls: "cell-mom-30" };
+                if (val >= 20) return { txt: typeof val === "number" ? val.toFixed(0) + " kt" : val, cls: "cell-mom-20" };
+                return { txt: typeof val === "number" ? val.toFixed(0) + " kt" : val, cls: "cell-vfr" };
+            }
+            if (metric === 'ceiling') {
+                if (val >= 23000) return { txt: "CLR", cls: "cell-vfr" };
+                if (val < 500) return { txt: Math.round(val) + " ft", cls: "cell-lifr" };
+                if (val < 1000) return { txt: Math.round(val) + " ft", cls: "cell-ifr" };
+                if (val <= 3000) return { txt: Math.round(val) + " ft", cls: "cell-mvfr" };
+                return { txt: Math.round(val) + " ft", cls: "cell-vfr" };
+            }
+            if (metric === 'vis') {
+                if (val < 1) return { txt: txt + " sm", cls: "cell-lifr" };
+                if (val < 3) return { txt: txt + " sm", cls: "cell-ifr" };
+                if (val <= 5) return { txt: txt + " sm", cls: "cell-mvfr" };
+                return { txt: txt + " sm", cls: "cell-vfr" };
+            }
+
+            // Low-Level Wind Shear. The magnitude drives the color curve; when it reaches the
+            // 20 kt TAF threshold the backend also supplies the WS group, shown beneath it so
+            // the cell reads the way it would in an actual TAF.
+            if (metric === 'llws') {
+                const mag = parseFloat(val);
+                if (isNaN(mag)) return { txt: "-", cls: "cell-vfr" };
+                let cls = "cell-vfr";
+                if (mag >= 40) cls = "cell-llws-40";
+                else if (mag >= 30) cls = "cell-llws-30";
+                else if (mag >= 20) cls = "cell-llws-20";
+                const taf = profile && profile.llws_taf;
+                const body = mag.toFixed(0) + " kt" +
+                    (taf ? `<span class="taf-group">${taf}</span>` : "");
+                return { txt: body, cls: cls };
+            }
+
+            return { txt: txt, cls: "cell-vfr" };
+        }
+
+        function renderMatrix() {
+            if (!historyRuns.length) return;
+            const cycle = historyRuns[activeRunIdx];
+            const lowerStn = activeStn.toLowerCase();
+            const upperStn = activeStn.toUpperCase();
+            const stationData = cycle.data[lowerStn] || cycle.data[upperStn] || {};
+            const body = document.getElementById("matrix-body");
+            const headerRow = document.getElementById("matrix-header-row");
+
+            const METRIC_TITLES = {
+                mom_mean: "PBL MOM MEAN", mom_max: "PBL MOM MAX", ceiling: "CEILING",
+                vis: "VISIBILITY", llws: "LOW-LEVEL WIND SHEAR"
+            };
+            document.getElementById("view-title").innerText =
+                `${METRIC_TITLES[activeMetric] || activeMetric.toUpperCase()} Matrix | Target: ${upperStn}`;
+            body.innerHTML = "";
+
+            // Show RRFS/REFS/ECMWF columns whenever the selected site actually carries that data.
+            const hasRrfs = !!(stationData["rrfs"] && Object.keys(stationData["rrfs"]).length);
+            const hasRefs = !!(stationData["refs"] && Object.keys(stationData["refs"]).length);
+            const hasEcmwf = !!(stationData["ecmwf"] && Object.keys(stationData["ecmwf"]).length);
+            const models = ["gfs", "rap", "hrrr"];
+            if (hasEcmwf) models.push("ecmwf");
+            if (hasRrfs) models.push("rrfs");
+            if (hasRefs) models.push("refs");
+
+            const modelHeaders = {
+                gfs: "GFS", rap: "RAP", hrrr: "HRRR",
+                ecmwf: "ECMWF<br><span style='font-weight:normal;font-size:0.7em'>IFS 0.25°</span>",
+                rrfs: "RRFS", refs: "REFS<br><span style='font-weight:normal;font-size:0.7em'>avg</span>"
+            };
+            const modelThs = models.map(m => {
+                let extra = "";
+                if (m === "rrfs" || m === "refs") extra = " style='background:#1e3a5f; color:white;'";
+                else if (m === "ecmwf") extra = " style='background:#5b21b6; color:white;'";
+                return `<th${extra}>${modelHeaders[m]}</th>`;
+            }).join("");
+
+            // The Calibrated Thunder column is persistent on every aviation view — it's the one
+            // convective field that survives in this build, and it's the reason you'd bust a TAF.
+            headerRow.innerHTML = `
+                <th style="width: 95px;">Time (UTC)</th>
+                ${modelThs}
+                <th style="width: 110px; background:#475569; color:white; border-left: 2px solid #cbd5e1 !important; cursor:pointer;" onclick="toggleCtWindow()" title="Click to toggle 1-hr / 4-hr calibrated thunder">CT ${ctWindow}<br><span style="font-weight:normal;font-size:0.7em">cal. thunder ⇄</span></th>
+            `;
+
+            renderLegendPanel();
+
+            let timeSet = new Set();
+            models.forEach(m => {
+                let mData = stationData[m] || stationData[m.toUpperCase()];
+                if (mData) Object.keys(mData).forEach(t => timeSet.add(t));
+            });
+
+            let sortedTimes = Array.from(timeSet).sort((a, b) => {
+                const [dayA, hourA] = a.split('/').map(Number);
+                const [dayB, hourB] = b.split('/').map(Number);
+                let finalDayA = dayA, finalDayB = dayB;
+                if (Math.abs(dayA - dayB) > 15) {
+                    if (dayA < dayB) finalDayA += 32;
+                    else finalDayB += 32;
+                }
+                if (finalDayA !== finalDayB) return finalDayA - finalDayB;
+                return hourA - hourB;
+            });
+
+            const sliderPanel = document.getElementById("href-slider-panel");
+            const mainLayout = document.querySelector(".main-layout");
+            if (activeMetric === 'ct_thunder') {
+                sliderPanel.style.display = "block";
+                mainLayout.style.display = "none";
+                // Slider follows the 1-hr/4-hr toggle (ctWindow) and unions keys from both
+                // windows so every forecast hour with any calibrated-thunder info gets a stop.
+                let keySet = new Set(Object.keys(activeCtMaps()));
+                Object.keys(ct1Maps || {}).forEach(k => keySet.add(k));
+                Object.keys(ct4Maps || {}).forEach(k => keySet.add(k));
+                const ctRun = historyRuns[activeRunIdx] || {};
+                const ptsKey = (ctWindow === '1hr') ? 'ct1_points' : 'ct4_points';
+                const ctStn = (ctRun[ptsKey] && ctRun[ptsKey][hrefStationFor(activeStn)]) || {};
+                Object.keys(ctStn).forEach(k => keySet.add(k));
+                hrefSliderTimes = Array.from(keySet).sort((a, b) => {
+                    const [dayA, hourA] = a.split('/').map(Number);
+                    const [dayB, hourB] = b.split('/').map(Number);
+                    let fda = dayA, fdb = dayB;
+                    if (Math.abs(dayA - dayB) > 15) { if (dayA < dayB) fda += 32; else fdb += 32; }
+                    return fda !== fdb ? fda - fdb : hourA - hourB;
+                });
+                if (hrefSliderIdx >= hrefSliderTimes.length) hrefSliderIdx = 0;
+                // Open on the first forecast hour that actually has a rendered map (either
+                // window), so the panel never launches on a blank basemap.
+                const hasMapAt = (tk) => {
+                    const alt = ((ctWindow === '1hr') ? ct4Maps : ct1Maps) || {};
+                    return !!(activeCtMaps()[tk] || alt[tk]);
+                };
+                const firstReal = hrefSliderTimes.findIndex(hasMapAt);
+                if (firstReal >= 0 && (hrefSliderIdx === 0)) hrefSliderIdx = firstReal;
+                const sliderInput = document.getElementById("href-slider-input");
+                sliderInput.max = Math.max(0, hrefSliderTimes.length - 1);
+                sliderInput.value = hrefSliderIdx;
+                renderCtSliderFrame(hrefSliderIdx);
+                return; // skip table rendering entirely
+            } else {
+                sliderPanel.style.display = "none";
+                mainLayout.style.display = "flex";
+                stopHrefPlay();
+            }
+
+            sortedTimes.forEach(timeKey => {
+                const tr = document.createElement("tr");
+                tr.innerHTML = `<td class="time-col">${timeKey}Z</td>`;
+
+                models.forEach(m => {
+                    let mData = stationData[m] || stationData[m.toUpperCase()];
+                    const profile = mData ? mData[timeKey] : null;
+
+                    if (!profile) {
+                        tr.innerHTML += `<td>-</td>`;
+                        return;
+                    }
+
+                    let val = profile[activeMetric];
+                    let props = getCellProperties(activeMetric, val, profile);
+                    let cellId = `c_${lowerStn}_${m}_${timeKey.replace('/','_')}`;
+
+                    tr.innerHTML += `<td id="${cellId}" class="${props.cls}" style="cursor:help;">${props.txt}</td>`;
+
+                    setTimeout(() => {
+                        const cellEl = document.getElementById(cellId);
+                        if(cellEl) {
+                            cellEl.onmouseenter = (e) => showPopup(e, m, profile);
+                            cellEl.onmousemove = movePopup;
+                            cellEl.onmouseleave = hidePopup;
+                        }
+                    }, 0);
+                });
+
+                // Persistent lightning column shows HREF Calibrated Thunder — the ML-calibrated
+                // probability of >=1 CG flash within 20 km. The window (1-hr / 4-hr) is toggled
+                // via the clickable column header, and falls back per-hour to whichever window
+                // actually has a map/value this cycle.
+                const ctRun = historyRuns[activeRunIdx] || {};
+                const selMaps = (ctWindow === '1hr' ? ct1Maps : ct4Maps) || {};
+                const otherWin = (ctWindow === '1hr') ? '4hr' : '1hr';
+                const otherMaps = (ctWindow === '1hr' ? ct4Maps : ct1Maps) || {};
+                let shownWin = ctWindow;
+                let ctMap = selMaps[timeKey] || null;
+                if (!ctMap && otherMaps[timeKey]) { ctMap = otherMaps[timeKey]; shownWin = otherWin; }
+
+                const ctPointsKey = (shownWin === '1hr') ? 'ct1_points' : 'ct4_points';
+                const ctStn = (ctRun[ctPointsKey] && ctRun[ctPointsKey][hrefStationFor(activeStn)]) || {};
+                let ctVal = ctStn[timeKey];
+                if (ctVal === undefined || ctVal === null) ctVal = 0;
+                // Backend already returns an integer percent (0-100). Do NOT re-scale.
+                ctVal = Math.max(0, Math.min(100, Math.round(ctVal)));
+
+                let ctCls = "ltg-none";
+                if (ctVal > 0) {
+                    if (ctVal >= 30) ctCls = "ltg-high";
+                    else if (ctVal >= 15) ctCls = "ltg-med";
+                    else if (ctVal >= 5) ctCls = "ltg-low";
+                    else ctCls = "ltg-vlow";
+                }
+
+                let hrefCellId = `c_${lowerStn}_href_${timeKey.replace('/','_')}`;
+                const winLabel = (shownWin === '1hr') ? "1-hr" : "4-hr";
+                tr.innerHTML += `<td id="${hrefCellId}" class="href-interactive-col ${ctCls}" style="cursor:help; border-left: 2px solid #cbd5e1 !important;">${ctVal}%</td>`;
+
+                setTimeout(() => {
+                    const hrefEl = document.getElementById(hrefCellId);
+                    if(hrefEl) {
+                        hrefEl.onmouseenter = (e) => showCtMapPopup(e, ctVal, ctMap, timeKey, winLabel);
+                        hrefEl.onmousemove = movePopup;
+                        hrefEl.onmouseleave = hidePopup;
+                    }
+                }, 0);
+
+                body.appendChild(tr);
+            });
+        }
+
+        // Which CT map set the slider should show, following the table's 1-hr/4-hr toggle.
+        function activeCtMaps() {
+            return ((ctWindow === '1hr') ? ct1Maps : ct4Maps) || {};
+        }
+
+        // Does the active run actually carry calibrated-thunder point data for a window?
+        // (NOMADS frequently posts only the 1-hr HREFCT field, leaving 4-hr absent — in which
+        // case ct4_points is an empty {} per station and would render as a column of 0%.)
+        function ctWindowHasData(win) {
+            const key = (win === '1hr') ? 'ct1_points' : 'ct4_points';
+            const run = historyRuns[activeRunIdx] || historyRuns[0] || {};
+            const pts = run[key] || {};
+            return Object.values(pts).some(stnObj => stnObj && Object.keys(stnObj).length > 0);
+        }
+
+        // Pick a sensible default window for the current run: prefer 4-hr, fall back to 1-hr.
+        function pickDefaultCtWindow() {
+            if (ctWindowHasData('4hr')) ctWindow = '4hr';
+            else if (ctWindowHasData('1hr')) ctWindow = '1hr';
+        }
+
+        // Header click handler — toggles the calibrated-thunder accumulation window, but only
+        // to a window that actually has data this cycle (otherwise it would show all 0%).
+        function toggleCtWindow() {
+            const other = (ctWindow === '1hr') ? '4hr' : '1hr';
+            if (!ctWindowHasData(other)) {
+                alert(`Calibrated Thunder ${other.toUpperCase()} isn't posted on NOMADS for this cycle — only ${ctWindow.toUpperCase()} is available.`);
+                return;
+            }
+            ctWindow = other;
+            hrefSliderIdx = 0; // let the slider re-seek its first real map for the new window
+            renderMatrix();
+        }
+
+        // <img> with a graceful fallback: if the PNG path 404s (e.g. a map that failed to
+        // generate this run), swap to the blank basemap and log the bad src to the console
+        // instead of showing a broken-image icon.
+        function imgTag(src, alt, extraStyle) {
+            if (!src) return `<div class="href-slider-cell-empty">No spatial data<br>for this hour</div>`;
+            const style = extraStyle ? ` style="${extraStyle}"` : "";
+            const fb = hrefBlankMap || "";
+            return `<img src="${src}" alt="${alt}"${style} ` +
+                   `onerror="if(this.dataset.fb!=='1'){this.dataset.fb='1';console.warn('slider map 404:', this.getAttribute('src'));this.src='${fb}';}" />`;
+        }
+
+        function renderCtSliderFrame(idx) {
+            if (!hrefSliderTimes.length) return;
+            idx = Math.max(0, Math.min(idx, hrefSliderTimes.length - 1));
+            hrefSliderIdx = idx;
+            const timeKey = hrefSliderTimes[idx];
+            const cycle = historyRuns[activeRunIdx] || {};
+
+            // Pick the map first, then read the % from the SAME window so the readout can
+            // never disagree with the plot. Prefer the selected window; if it has no map for
+            // this hour (e.g. the 4-hr field isn't posted this cycle), fall back to the other.
+            const otherWin = (ctWindow === '1hr') ? '4hr' : '1hr';
+            const otherMaps = ((ctWindow === '1hr') ? ct4Maps : ct1Maps) || {};
+            let shownWin = ctWindow;
+            let mapSrc = activeCtMaps()[timeKey];
+            if (!mapSrc && otherMaps[timeKey]) { mapSrc = otherMaps[timeKey]; shownWin = otherWin; }
+            const usedFallback = (shownWin !== ctWindow);
+
+            const shownPtsKey = (shownWin === '1hr') ? 'ct1_points' : 'ct4_points';
+            const shownStn = (cycle[shownPtsKey] && cycle[shownPtsKey][hrefStationFor(activeStn)]) || {};
+            let ctVal = shownStn[timeKey];
+            if (ctVal === undefined || ctVal === null) ctVal = 0;
+            ctVal = Math.max(0, Math.min(100, Math.round(ctVal)));
+
+            const winLabel = (shownWin === '1hr') ? "1-hr" : "4-hr";
+            if (!mapSrc) mapSrc = hrefBlankMap;
+
+            document.getElementById("href-slider-time").innerText = `${timeKey}Z`;
+            document.getElementById("href-slider-input").value = idx;
+            const ctTitle = document.getElementById("href-slider-title");
+            if (ctTitle) ctTitle.innerText = `HREF Calibrated Thunder (${winLabel}) — Florida Domain`;
+            const grid = document.getElementById("href-slider-grid");
+            const note = usedFallback ? ` <span style="font-weight:normal;color:#94a3b8;">(${ctWindow} unavailable — showing ${winLabel})</span>` : "";
+            grid.innerHTML = `<div class="href-slider-cell">
+                ${imgTag(mapSrc, "Calibrated thunder map", "max-height: calc(100vh - 300px);")}
+                <div class="href-slider-cell-label">HREF Calibrated Thunder (${winLabel}) &mdash; ${ctVal}% at ${activeStn.toUpperCase()}${note}</div>
+            </div>`;
+        }
+
+        function updateHrefSliderFrame(idx) {
+            renderCtSliderFrame(parseInt(idx, 10));
+        }
+
+        function stepHrefSlider(delta) {
+            renderCtSliderFrame(hrefSliderIdx + delta);
+        }
+
+        function toggleHrefPlay() {
+            const btn = document.getElementById("href-play-btn");
+            if (hrefPlayTimer) {
+                stopHrefPlay();
+                return;
+            }
+            btn.innerHTML = "&#10074;&#10074; Pause";
+            hrefPlayTimer = setInterval(() => {
+                if (hrefSliderIdx >= hrefSliderTimes.length - 1) {
+                    stopHrefPlay();
+                    return;
+                }
+                renderCtSliderFrame(hrefSliderIdx + 1);
+            }, 1200);
+        }
+
+        function stopHrefPlay() {
+            if (hrefPlayTimer) {
+                clearInterval(hrefPlayTimer);
+                hrefPlayTimer = null;
+            }
+            const btn = document.getElementById("href-play-btn");
+            if (btn) btn.innerHTML = "&#9654; Play";
+        }
+
+        function renderLegendPanel() {
+            const panel = document.getElementById("dynamic-legend-panel");
+            panel.innerHTML = `
+                <div class="legend-title">Matrix Threshold Criteria</div>
+
+                <div class="legend-section-title">Aviation Flight Categories</div>
+                <div class="legend-item" style="background:#ffffff; color:#1e293b; border:1px solid #cbd5e1;"><span>VFR Status</span><span>Nominal / Uncolored</span></div>
+                <div class="legend-item cell-mvfr"><span>MVFR Alert</span><span>1000-3000 ft / 3-5 sm</span></div>
+                <div class="legend-item cell-ifr"><span>IFR Restriction</span><span>500-1000 ft / 1-3 sm</span></div>
+                <div class="legend-item cell-lifr"><span>LIFR Critical</span><span>&lt; 500 ft / &lt; 1 sm</span></div>
+
+                <div class="legend-section-title">Planetary Boundary Layer Wind (Mean)</div>
+                <div class="legend-item cell-alert"><span>Elevated Winds</span><span>&gt; 20 kt Kinematics</span></div>
+
+                <div class="legend-section-title">Max Momentum Layer Wind (Peak)</div>
+                <div class="legend-item cell-mom-20"><span>Elevated Peak</span><span>≥ 20 kt</span></div>
+                <div class="legend-item cell-mom-30"><span>Strong Peak</span><span>≥ 30 kt</span></div>
+                <div class="legend-item cell-mom-40"><span>Severe Peak</span><span>≥ 40 kt</span></div>
+
+                <div class="legend-section-title">Low-Level Wind Shear (LLWS)</div>
+                <div class="legend-item cell-llws-20"><span>Marginal</span><span>≥ 20 kt &mdash; TAF WS group</span></div>
+                <div class="legend-item cell-llws-30"><span>Moderate</span><span>≥ 30 kt</span></div>
+                <div class="legend-item cell-llws-40"><span>High</span><span>≥ 40 kt</span></div>
+
+                <div class="legend-section-title">HREF Calibrated Thunder (Prob.)</div>
+                <div class="legend-item ltg-vlow"><span>Very Low Prob</span><span>&gt; 0% prob.</span></div>
+                <div class="legend-item ltg-low"><span>Low Probability</span><span>≥ 5% prob.</span></div>
+                <div class="legend-item ltg-med"><span>Medium Probability</span><span>≥ 15% prob.</span></div>
+                <div class="legend-item ltg-high"><span>High Probability</span><span>≥ 30% prob.</span></div>
+
+                <div class="explanation-box">
+                    <strong>Aviation Parameter Definitions &amp; Methodology:</strong><br><br>
+                    • <strong>PBL Mom Mean:</strong> The mean wind through the mixed layer (mean layer wind), using the BUFKIT momentum-transfer technique to define the mixed-layer depth.<br><br>
+                    • <strong>PBL Mom Max:</strong> The strongest potential wind within the mixed layer that convective mixing could bring down as surface gusts, using the same BUFKIT momentum-transfer technique.<br><br>
+                    • <strong>Ceilings:</strong> Scanned bottom-up through the profile; a cloud layer is flagged where relative humidity ≥ 95%. The base height (ft) of the lowest such layer at or above 100 ft is reported as the ceiling; if none exist the sky is treated as clear (24,000 ft).<br><br>
+                    • <strong>Visibility:</strong> Estimated from surface dewpoint depression as a saturation proxy — ≤0.5°C → ¼ sm, ≤1°C → 1 sm, ≤2°C → 3 sm, otherwise 10 sm. A first-order fog/mist screen, not a direct obs.<br><br>
+                    • <strong>LLWS (Low-Level Wind Shear):</strong> The largest <em>vector</em> wind difference between any two levels in the lowest 2,000 ft AGL. Each level's wind is decomposed into u/v components and every pair in the layer is differenced, so a wind that backs or veers sharply at constant speed still registers as shear — the classic hand method, and the reason the strongest value is often between two levels aloft rather than surface-to-top. The colored number is that magnitude in knots. At or above <strong>20 kt</strong> the cell also carries the TAF group in the standard form <code>WSddd/dddffKT</code>: shear-layer top in hundreds of feet AGL, then the wind at that height (direction to the nearest 10°, speed to the nearest 5 kt). Hover any cell for the shear-top height and wind.<br><br>
+                    • <strong>CT (table column):</strong> HREF Calibrated Thunder — the machine-learning-calibrated probability of at least one cloud-to-ground lightning flash within 20 km (12 mi) of the point, calibrated against observed NLDN strikes. The column header toggles between the 4-hour (default) and 1-hour accumulation windows; hover a cell for the spatial map at that hour.<br><br>
+                    • <strong>Cal. Thunder Map:</strong> Full Space-Coast-domain spatial view of the calibrated-thunder probability field with a time slider (1–48 h). The window follows the toggle in the CT column header; if NOMADS posts only one window this cycle, the other is skipped automatically.<br><br>
+                    • <strong>10Z Synoptic:</strong> Daily airmass panel at KXMR — 1000–700 mb mean flow and onshore/offshore regime, 300–150 mb anvil flow, Thompson Index, 700–500 mb mean RH and PWAT (each with its XMR monthly climatological percentile, clickable for a box-and-whisker plot), and the Cizek random-forest lightning probability.<br><br>
+                    <span style="color:#64748b; font-size:0.92em;"><em>LLWS caveat by data source: the BUFKIT columns (GFS/RAP/HRRR at the airports) carry ~40 levels and resolve a shallow nocturnal jet well. The raw-GRIB columns — every launch pad, plus RRFS, REFS and ECMWF — are built on mandatory isobaric levels, giving only two or three levels below 2,000 ft, so an interpolated 2,000 ft AGL level is always spliced in. Treat GRIB-column LLWS as a bulk surface-to-2,000 ft estimate; it will systematically under-read thin, strongly-sheared jets. ECMWF at 12 levels is the coarsest of these.</em></span><br><br>
+                    <span style="color:#64748b; font-size:0.92em;"><em>Note: the REFS ensemble-mean product carries only a single isobaric humidity level, so the moisture-based fields (ceiling, visibility) cannot be reliably resolved on the REFS column and may read CLR/10 sm. Its PBL winds and LLWS remain valid.</em></span><br><br>
+                    <span style="color:#64748b; font-size:0.92em;"><em>Note: the ECMWF column is the IFS HRES at 0.25° from ECMWF Open Data (CC-BY-4.0), point-extracted on a coarse 12-level pressure grid and posted 3-hourly. PBL winds are reliable; ceiling and visibility are advisory only because the vertical humidity structure is under-resolved. Data © 2026 ECMWF.</em></span>
+                </div>
+            `;
+        }
+
+        function showPopup(e, model, p) {
+            const llwsTxt = (p.llws == null)
+                ? '—'
+                : `${Number(p.llws).toFixed(0)} kt` +
+                  (p.llws_hft != null ? ` @ ${p.llws_hft} ft AGL` : '');
+            const llwsWind = (p.llws_dir == null)
+                ? ''
+                : `<br>&nbsp;&nbsp;&nbsp;<span style="color:#64748b;">shear-top wind ${p.llws_dir}° / ${Number(p.llws_spd).toFixed(0)} kt</span>`;
+            const tafTxt = p.llws_taf
+                ? `<br>• TAF group: <strong style="letter-spacing:0.03em;">${p.llws_taf}</strong>`
+                : `<br>• TAF group: <span style="color:#94a3b8;">below the 20 kt threshold</span>`;
+            popupCard.innerHTML = `
+                <div class="popup-header">${model.toUpperCase()} Aviation Diagnostics</div>
+                • Ceilings: <strong>${p.ceiling >= 23000 ? 'Clear' : p.ceiling + ' ft'}</strong><br>
+                • Visibility: <strong>${p.vis} sm</strong><br>
+                • Mean Boundary Wind: <strong>${p.mom_mean} kt</strong><br>
+                • Max Wind Speed: <strong>${p.mom_max} kt</strong><br>
+                • LLWS (0–2,000 ft AGL): <strong>${llwsTxt}</strong>${llwsWind}${tafTxt}
+            `;
+            popupCard.style.display = "block";
+            movePopup(e);
+        }
+
+        function showCtMapPopup(e, ctVal, mapSrc, timeKey, windowLabel) {
+            const src = mapSrc || hrefBlankMap;
+            const fb = hrefBlankMap || "";
+            const mapHtml = src
+                ? `<div class="ltg-map-grid" style="grid-template-columns: 1fr;"><div class="ltg-map-cell"><img src="${src}" alt="Calibrated thunder map" onerror="if(this.dataset.fb!=='1'){this.dataset.fb='1';this.src='${fb}';}" /></div></div>`
+                : `<div class="ltg-map-empty-full">No spatial data for ${timeKey || 'this'}Z.</div>`;
+            popupCard.innerHTML = `
+                <div class="popup-header">HREF Calibrated Thunder (${windowLabel})</div>
+                <strong>P(&ge;1 CG flash within 20 km): ${ctVal}%</strong><br>
+                <span style="font-size:0.8rem; color:#64748b;">ML-calibrated against observed lightning · valid ${timeKey}Z</span>
+                ${mapHtml}
+            `;
+            popupCard.style.display = "block";
+            movePopup(e);
+        }
+
+        function movePopup(e) {
+            // Measure the popup, then place it so it never runs off any edge.
+            const pad = 15;
+            const rect = popupCard.getBoundingClientRect();
+            const pw = rect.width || 540;
+            const ph = rect.height || 400;
+
+            let left = e.pageX + pad;
+            let top = e.pageY - 40;
+            // Flip to the left of the cursor if it would overflow the right edge.
+            if (left + pw > window.scrollX + window.innerWidth - pad) {
+                left = e.pageX - pw - pad;
+            }
+
+            // Horizontal clamp
+            const minLeft = window.scrollX + pad;
+            const maxLeft = window.scrollX + window.innerWidth - pw - pad;
+            if (left > maxLeft) left = maxLeft;
+            if (left < minLeft) left = minLeft;
+
+            // Vertical clamp (keeps the bottom of the panel on screen)
+            const maxTop = window.scrollY + window.innerHeight - ph - pad;
+            const minTop = window.scrollY + pad;
+            if (top > maxTop) top = maxTop;
+            if (top < minTop) top = minTop;
+
+            popupCard.style.left = left + "px";
+            popupCard.style.top = top + "px";
+        }
+
+        function hidePopup() { popupCard.style.display = "none"; }
+
+        // ---- 10Z Synoptic panel (mean flow / regime / anvil / Thompson / RH / PWAT / lightning) ----
+        // The cron is hourly but the models are not. GFS/ECMWF/RRFS/REFS cycle every 6 h, so
+        // consecutive hourly snapshots of those columns are identical and stepping run-by-run shows
+        // nothing. So DPROG/DT steps by TIME at each model's own cycle cadence, and we pick the
+        // stored snapshot nearest that target time.
+        const MODEL_CYCLE_H = { gfs: 6, ecmwf: 6, gefs: 6, rrfs: 6, refs: 6, rap: 1, hrrr: 1 };
+        const LT_STEPS = 4;   // current + 3 back
+        function ltParseTs(ts) {
+            if (!ts) return null;
+            const d = new Date(String(ts).replace(' UTC', 'Z').replace(' ', 'T'));
+            return isNaN(d.getTime()) ? null : d;
+        }
+        function ltStepHours(model) { return MODEL_CYCLE_H[model] || 1; }
+        function ltResolveRun(model, k) {
+            // k = 0 is always the current run; k>0 targets (k * cycle) hours before it.
+            if (!launchThermoRuns || !launchThermoRuns.length) {
+                return { thermo: launchThermo, timestamp: null, offset: 0, exact: true };
+            }
+            if (k === 0) {
+                return { thermo: launchThermoRuns[0].thermo || launchThermo,
+                         timestamp: launchThermoRuns[0].timestamp, offset: 0, exact: true };
+            }
+            const stepH = ltStepHours(model);
+            const t0 = ltParseTs(launchThermoRuns[0].timestamp);
+            if (!t0) return { thermo: null, timestamp: null, offset: -k * stepH, exact: false };
+            const target = new Date(t0.getTime() - k * stepH * 3600 * 1000);
+            let best = null, bestDiff = Infinity;
+            for (const r of launchThermoRuns) {
+                const t = ltParseTs(r.timestamp);
+                if (!t) continue;
+                const diff = Math.abs(t.getTime() - target.getTime());
+                if (diff < bestDiff) { bestDiff = diff; best = r; }
+            }
+            // Accept only if within half a step of the target, else report the gap honestly.
+            const tolMs = Math.max(stepH * 0.5, 0.75) * 3600 * 1000;
+            const ok = best && bestDiff <= tolMs;
+            return { thermo: ok ? best.thermo : null, timestamp: ok ? best.timestamp : null,
+                     offset: -k * stepH, exact: ok,
+                     actualH: best ? Math.round((ltParseTs(best.timestamp) - t0) / 36e5) : null };
+        }
+        function ltActiveThermo() {
+            const sel = document.getElementById('ltModel');
+            const model = sel ? sel.value : null;
+            const r = ltResolveRun(model, ltRunIdx);
+            return r.thermo || (launchThermoRuns && launchThermoRuns[0] && launchThermoRuns[0].thermo) || launchThermo;
+        }
+        function setLaunchThermoRun(i) {
+            ltRunIdx = i;
+            renderLaunchThermoRuns();
+            renderLaunchThermo();
+        }
+        function renderLaunchThermoRuns() {
+            const el = document.getElementById('ltRuns');
+            if (!el) return;
+            if (!launchThermoRuns || launchThermoRuns.length < 2) { el.innerHTML = ''; return; }
+            const sel = document.getElementById('ltModel');
+            const model = sel ? sel.value : null;
+            const stepH = ltStepHours(model);
+            let html = '';
+            for (let i = 0; i < LT_STEPS; i++) {
+                const r = ltResolveRun(model, i);
+                const label = i === 0 ? 'Current Run' : `\u2212${i * stepH} h`;
+                const on = (i === ltRunIdx);
+                const dead = (i > 0 && !r.exact);
+                html += `<button onclick="setLaunchThermoRun(${i})" title="${r.timestamp || 'no snapshot near this offset yet'}"
+                    style="border:1px solid ${on ? '#1e3a5f' : '#cbd5e1'}; background:${on ? '#1e3a5f' : '#fff'};
+                           color:${on ? '#fff' : (dead ? '#cbd5e1' : '#1e3a5f')}; border-radius:6px; padding:3px 10px;
+                           margin-right:6px; cursor:pointer; font-size:0.8rem; font-weight:${on ? '600' : '400'};">${label}</button>`;
+            }
+            const cur = ltResolveRun(model, ltRunIdx);
+            const note = (ltRunIdx > 0 && !cur.exact)
+                ? `<span style="color:#b45309; font-size:0.75rem; margin-left:4px;">no snapshot near \u2212${ltRunIdx * stepH} h yet</span>`
+                : `<span style="color:#94a3b8; font-size:0.75rem; margin-left:4px;">${cur.timestamp || ''}
+                     ${model ? `&middot; ${model.toUpperCase()} cycles every ${stepH} h` : ''}</span>`;
+            el.innerHTML = html + note;
+        }
+        function showLaunchThermo() {
+            if (!launchThermo || !(launchThermo.models || []).length) {
+                alert("No 10Z synoptic data in this run yet.");
+                return;
+            }
+            ltRunIdx = 0;
+            document.getElementById('ltSite').textContent = launchThermo.site || 'KXMR';
+            const sel = document.getElementById('ltModel');
+            sel.innerHTML = launchThermo.models
+                .map(m => `<option value="${m}">${m.toUpperCase()}</option>`).join('');
+            renderLaunchThermoRuns();
+            renderLaunchThermo();
+            document.getElementById('ltModal').style.display = 'flex';
+        }
+        function hideLaunchThermo() { document.getElementById('ltModal').style.display = 'none'; }
+
+        // ---- Monthly climatology box-and-whisker, drawn from the same percentile tables the
+        // percentile badges use, with this run's forecast days overlaid as red dots. ----
+        const LT_BOX_VARS = {
+            thompson: { label: 'Thompson Index (C)',            unit: '',   get: r => r.ti },
+            rh75:     { label: '700-500mb Average RH (%)',      unit: '%',  get: r => r.ltg_rh },
+            pwat:     { label: 'PWAT (inches)',                 unit: ' in', get: r => r.pwat },
+        };
+        function ltBoxPlotSVG(varName) {
+            const cfg = LT_BOX_VARS[varName];
+            const tbl = (climoTables || {})[varName];
+            const pts = (climoTables || {}).points;
+            if (!cfg || !tbl || !pts) return null;
+            const iOf = p => pts.indexOf(p);
+            const MN = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+            const stat = {};
+            let lo = Infinity, hi = -Infinity;
+            for (let m = 1; m <= 12; m++) {
+                const v = tbl[m] || tbl[String(m)];
+                if (!v) continue;
+                stat[m] = {
+                    min: v[iOf(0)], w1: v[iOf(1)],
+                    q25: (v[iOf(20)] + v[iOf(30)]) / 2,     // interpolate 25th from the 20/30 points
+                    med: v[iOf(50)],
+                    q75: (v[iOf(70)] + v[iOf(80)]) / 2,     // and 75th from 70/80
+                    w99: v[iOf(99)], max: v[iOf(100)]
+                };
+                lo = Math.min(lo, v[iOf(0)]); hi = Math.max(hi, v[iOf(100)]);
+            }
+            if (!Object.keys(stat).length) return null;
+
+            // this run's rows for the selected model
+            const thermo = ltActiveThermo();
+            const model = document.getElementById('ltModel').value;
+            const rows = ((thermo.by_model || {})[model] || [])
+                .map(r => ({ m: r.month, v: cfg.get(r), lbl: r.date }))
+                .filter(d => d.m != null && d.v != null);
+            rows.forEach(d => { lo = Math.min(lo, d.v); hi = Math.max(hi, d.v); });
+
+            const W = 900, H = 430, ml = 62, mr = 18, mt = 26, mb = 62;
+            const pw = W - ml - mr, ph = H - mt - mb;
+            const pad = (hi - lo) * 0.04 || 1;
+            const y0 = lo - pad, y1 = hi + pad;
+            const X = m => ml + pw * ((m - 0.5) / 12);
+            const Y = v => mt + ph * (1 - (v - y0) / (y1 - y0));
+            const bw = (pw / 12) * 0.52;
+
+            let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px; font-family:system-ui,sans-serif;">`;
+            s += `<rect x="0" y="0" width="${W}" height="${H}" fill="#ffffff"/>`;
+            // y grid + labels
+            for (let i = 0; i <= 6; i++) {
+                const v = y0 + (y1 - y0) * i / 6, yy = Y(v);
+                s += `<line x1="${ml}" y1="${yy}" x2="${W - mr}" y2="${yy}" stroke="#e2e8f0" stroke-width="1"/>`;
+                s += `<text x="${ml - 8}" y="${yy + 3.5}" text-anchor="end" font-size="10" fill="#64748b">${
+                    Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(Math.abs(y1 - y0) < 5 ? 2 : 1)}</text>`;
+            }
+            // boxes
+            for (let m = 1; m <= 12; m++) {
+                const st = stat[m]; if (!st) continue;
+                const cx = X(m), x0 = cx - bw / 2;
+                s += `<line x1="${cx}" y1="${Y(st.w99)}" x2="${cx}" y2="${Y(st.q75)}" stroke="#334155" stroke-width="1"/>`;
+                s += `<line x1="${cx}" y1="${Y(st.w1)}" x2="${cx}" y2="${Y(st.q25)}" stroke="#334155" stroke-width="1"/>`;
+                s += `<line x1="${cx - bw * 0.28}" y1="${Y(st.w99)}" x2="${cx + bw * 0.28}" y2="${Y(st.w99)}" stroke="#334155" stroke-width="1"/>`;
+                s += `<line x1="${cx - bw * 0.28}" y1="${Y(st.w1)}" x2="${cx + bw * 0.28}" y2="${Y(st.w1)}" stroke="#334155" stroke-width="1"/>`;
+                s += `<rect x="${x0}" y="${Y(st.q75)}" width="${bw}" height="${Math.max(1, Y(st.q25) - Y(st.q75))}"
+                        fill="#3b7ea1" fill-opacity="0.85" stroke="#1e3a5f" stroke-width="1"/>`;
+                s += `<line x1="${x0}" y1="${Y(st.med)}" x2="${x0 + bw}" y2="${Y(st.med)}" stroke="#0f172a" stroke-width="1.6"/>`;
+                s += `<circle cx="${cx}" cy="${Y(st.min)}" r="2" fill="none" stroke="#94a3b8" stroke-width="0.8"/>`;
+                s += `<circle cx="${cx}" cy="${Y(st.max)}" r="2" fill="none" stroke="#94a3b8" stroke-width="0.8"/>`;
+                s += `<text x="${cx}" y="${H - mb + 16}" text-anchor="middle" font-size="10" fill="#475569">${MN[m - 1]}</text>`;
+            }
+            // this run's days, spread within the month slot when several share it
+            const byM = {};
+            rows.forEach(d => { (byM[d.m] = byM[d.m] || []).push(d); });
+            Object.keys(byM).forEach(m => {
+                const grp = byM[m], n = grp.length;
+                grp.forEach((d, i) => {
+                    const off = n === 1 ? 0 : (i - (n - 1) / 2) * Math.min(bw / Math.max(1, n - 1), 11);
+                    const cx = X(+m) + off, cy = Y(d.v);
+                    s += `<circle cx="${cx}" cy="${cy}" r="4.2" fill="#dc2626" stroke="#ffffff" stroke-width="1.2"/>`;
+                    s += `<title>${d.lbl}: ${d.v}${cfg.unit}</title>`;
+                    s += `<text x="${cx}" y="${cy - 8}" text-anchor="middle" font-size="8.5" fill="#dc2626" font-weight="600">${d.lbl.split(' ')[1]}</text>`;
+                });
+            });
+            s += `<text x="${W / 2}" y="16" text-anchor="middle" font-size="12" font-weight="700" fill="#0f172a">Monthly Distribution of ${cfg.label}</text>`;
+            s += `<text x="${W / 2}" y="${H - 8}" text-anchor="middle" font-size="10" fill="#475569">Month</text>`;
+            s += `</svg>`;
+            return s;
+        }
+        function ltBoxPlotOneSVG(varName, month, value, label, pctRank) {
+            const cfg = LT_BOX_VARS[varName];
+            const tbl = (climoTables || {})[varName];
+            const pts = (climoTables || {}).points;
+            if (!cfg || !tbl || !pts) return null;
+            const v = tbl[month] || tbl[String(month)];
+            if (!v) return null;
+            const iOf = p => pts.indexOf(p);
+            const MN = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+            const st = {
+                min: v[iOf(0)], w1: v[iOf(1)],
+                q25: (v[iOf(20)] + v[iOf(30)]) / 2,
+                med: v[iOf(50)],
+                q75: (v[iOf(70)] + v[iOf(80)]) / 2,
+                w99: v[iOf(99)], max: v[iOf(100)]
+            };
+            let lo = st.min, hi = st.max;
+            if (value != null) { lo = Math.min(lo, value); hi = Math.max(hi, value); }
+            const W = 560, H = 430, ml = 74, mr = 190, mt = 34, mb = 46;
+            const pw = W - ml - mr, ph = H - mt - mb;
+            const pad = (hi - lo) * 0.05 || 1;
+            const y0 = lo - pad, y1 = hi + pad;
+            const cx = ml + pw / 2, bw = Math.min(pw * 0.62, 120);
+            const Y = x => mt + ph * (1 - (x - y0) / (y1 - y0));
+            const fmt = x => Math.abs(y1 - y0) < 5 ? x.toFixed(2) : x.toFixed(1);
+
+            let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px; font-family:system-ui,sans-serif;">`;
+            s += `<rect width="${W}" height="${H}" fill="#fff"/>`;
+            for (let i = 0; i <= 6; i++) {
+                const val = y0 + (y1 - y0) * i / 6, yy = Y(val);
+                s += `<line x1="${ml}" y1="${yy}" x2="${ml + pw}" y2="${yy}" stroke="#e2e8f0"/>`;
+                s += `<text x="${ml - 8}" y="${yy + 3.5}" text-anchor="end" font-size="10" fill="#64748b">${fmt(val)}</text>`;
+            }
+            const x0 = cx - bw / 2;
+            s += `<line x1="${cx}" y1="${Y(st.w99)}" x2="${cx}" y2="${Y(st.q75)}" stroke="#334155"/>`;
+            s += `<line x1="${cx}" y1="${Y(st.w1)}" x2="${cx}" y2="${Y(st.q25)}" stroke="#334155"/>`;
+            s += `<line x1="${cx - bw * 0.3}" y1="${Y(st.w99)}" x2="${cx + bw * 0.3}" y2="${Y(st.w99)}" stroke="#334155"/>`;
+            s += `<line x1="${cx - bw * 0.3}" y1="${Y(st.w1)}" x2="${cx + bw * 0.3}" y2="${Y(st.w1)}" stroke="#334155"/>`;
+            s += `<rect x="${x0}" y="${Y(st.q75)}" width="${bw}" height="${Math.max(1, Y(st.q25) - Y(st.q75))}"
+                    fill="#3b7ea1" fill-opacity="0.85" stroke="#1e3a5f"/>`;
+            s += `<line x1="${x0}" y1="${Y(st.med)}" x2="${x0 + bw}" y2="${Y(st.med)}" stroke="#0f172a" stroke-width="1.8"/>`;
+            s += `<circle cx="${cx}" cy="${Y(st.min)}" r="2.4" fill="none" stroke="#94a3b8"/>`;
+            s += `<circle cx="${cx}" cy="${Y(st.max)}" r="2.4" fill="none" stroke="#94a3b8"/>`;
+            // reference labels to the right of the box
+            const refs = [['99th', st.w99], ['75th', st.q75], ['Median', st.med], ['25th', st.q25], ['1st', st.w1]];
+            refs.forEach(([nm, val]) => {
+                s += `<line x1="${x0 + bw}" y1="${Y(val)}" x2="${x0 + bw + 12}" y2="${Y(val)}" stroke="#cbd5e1"/>`;
+                s += `<text x="${x0 + bw + 16}" y="${Y(val) + 3.5}" font-size="9.5" fill="#64748b">${nm} \u00a0${fmt(val)}${cfg.unit}</text>`;
+            });
+            if (value != null) {
+                const vy = Y(value);
+                s += `<line x1="${ml}" y1="${vy}" x2="${x0 + bw + 12}" y2="${vy}" stroke="#dc2626" stroke-width="1" stroke-dasharray="4 3"/>`;
+                s += `<circle cx="${cx}" cy="${vy}" r="6" fill="#dc2626" stroke="#fff" stroke-width="1.6"/>`;
+                const above = vy > mt + 22;
+                s += `<text x="${cx + bw / 2 + 16}" y="${vy + (above ? -8 : 16)}" font-size="11" font-weight="700" fill="#dc2626">
+                        ${label}: ${value}${cfg.unit}${pctRank != null ? ` (${pctRank}th)` : ''}</text>`;
+            }
+            s += `<text x="${cx}" y="${H - mb + 20}" text-anchor="middle" font-size="11" fill="#334155" font-weight="600">${MN[month - 1]} climatology</text>`;
+            s += `<text x="${W / 2}" y="18" text-anchor="middle" font-size="12.5" font-weight="700" fill="#0f172a">${cfg.label} \u2014 ${MN[month - 1]}</text>`;
+            s += `</svg>`;
+            return s;
+        }
+        function showBoxPlotDay(varName, month, value, label, pctRank) {
+            const svg = ltBoxPlotOneSVG(varName, month, value, label, pctRank);
+            const body = document.getElementById('bpBody');
+            if (!svg) { body.innerHTML = '<div style="padding:20px; color:#94a3b8;">No climatology available for that variable.</div>'; }
+            else {
+                const model = document.getElementById('ltModel').value;
+                body.innerHTML = svg + `<div style="font-size:0.78rem; color:#64748b; margin-top:8px;">
+                    Box = 25th\u201375th percentile, line = median, whiskers = 1st/99th, open circles = record min/max
+                    (XMR climatology for this month). <span style="color:#dc2626; font-weight:600;">Red dot</span> is
+                    ${model.toUpperCase()} ${label}. <a href="#" onclick="showBoxPlot('${varName}'); return false;"
+                    style="color:#1e3a5f;">See all 12 months</a>.</div>`;
+            }
+            document.getElementById('bpModal').style.display = 'flex';
+        }
+        function showBoxPlot(varName) {
+            const svg = ltBoxPlotSVG(varName);
+            const body = document.getElementById('bpBody');
+            const model = document.getElementById('ltModel').value;
+            if (!svg) { body.innerHTML = '<div style="padding:20px; color:#94a3b8;">No climatology available for that variable.</div>'; }
+            else {
+                body.innerHTML = svg + `<div style="font-size:0.78rem; color:#64748b; margin-top:8px;">
+                    Box = 25th\u201375th percentile, line = median, whiskers = 1st/99th, open circles = record min/max
+                    (XMR climatology). <span style="color:#dc2626; font-weight:600;">Red dots</span> are this run's
+                    ${model.toUpperCase()} forecast days, placed in their own month.</div>`;
+            }
+            document.getElementById('bpModal').style.display = 'flex';
+        }
+        function hideBoxPlot() { document.getElementById('bpModal').style.display = 'none'; }
+        function renderLaunchThermo() {
+            const thermo = ltActiveThermo();
+            const model = document.getElementById('ltModel').value;
+            const rows = (thermo.by_model && thermo.by_model[model]) || [];
+            const ens = (rows[0] && /(\d+)-mem/.exec(rows[0].engine || '')) ;
+            const ensNote = ens ? `<div style="font-size:0.78rem; color:#475569; margin:2px 0 8px;">${
+                (document.getElementById('ltModel').value || '').toUpperCase()} = ${ens[1]}-member ensemble (mean of per-member indices, not the mean sounding).</div>` : '';
+            const pctColor = (v) => {
+                // low percentiles = calm/dry/stable, high = moist/unstable -> escalate cool->red
+                if (v == null) return null;
+                if (v >= 90) return { bg: '#dc2626', fg: '#ffffff' };  // >=90th
+                if (v >= 75) return { bg: '#f59e0b', fg: '#3a2a00' };  // 75-89th
+                if (v >= 50) return { bg: '#fde68a', fg: '#3a2a00' };  // 50-74th
+                if (v >= 25) return { bg: '#dbeafe', fg: '#1e3a5f' };  // 25-49th
+                return { bg: '#e0f2fe', fg: '#0c4a6e' };               // <25th
+            };
+            const pct = (v) => {
+                if (v == null) return '<span style="color:#94a3b8;">—</span>';
+                const c = pctColor(v);
+                return `<span style="background:${c.bg}; color:${c.fg}; padding:1px 7px; border-radius:10px; font-weight:600; font-size:0.82rem;">${v}<sup>th</sup></span>`;
+            };
+            const num = (v) => v == null ? '—' : v;
+            const flow = (r) => (r.mf_dir == null) ? '—' : `${r.mf_dir}° / ${num(r.mf_spd)} kt`;
+            const anvil = (r) => (r.av_dir == null) ? '—' : `${r.av_dir}° / ${num(r.av_spd)} kt`;
+            // The Cape's coast faces roughly east, so an easterly component is ONSHORE (marine,
+            // moist, sea-breeze suppressed) and a westerly component is OFFSHORE (continental,
+            // sea-breeze favorable). Due N/S is alongshore — neither.
+            const REGIME_CLASS = { NE:'on', E:'on', SE:'on', NW:'off', W:'off', SW:'off', N:'along', S:'along' };
+            const regimeCell = (v) => {
+                if (!v) return '—';
+                const k = REGIME_CLASS[v] || 'along';
+                const style = k === 'on'  ? 'background:#dbeafe; color:#0c4a6e;'      // onshore  — blue
+                            : k === 'off' ? 'background:#fed7aa; color:#7c2d12;'      // offshore — amber
+                            :               'background:#dcfce7; color:#14532d;';     // alongshore — green
+                const tag = k === 'on' ? 'onshore' : k === 'off' ? 'offshore' : 'alongshore';
+                return `<span title="${tag}" style="${style} padding:2px 9px; border-radius:10px; font-weight:600;">${v}</span>
+                        <span style="color:#94a3b8; font-size:0.72rem; margin-left:4px;">${tag}</span>`;
+            };
+            const clickCell = (varName, r, val, pctVal, inner) => {
+                if (val == null || r.month == null) return `<td style="padding:8px 6px;">${inner}</td>`;
+                return `<td onclick="showBoxPlotDay('${varName}', ${r.month}, ${val}, '${r.date}', ${pctVal == null ? 'null' : pctVal})"
+                          title="Click to see ${r.date} on the monthly climatology"
+                          style="padding:8px 6px; cursor:pointer;">${inner}</td>`;
+            };
+            const rhCell = (r) => {
+                if (r.ltg_rh == null) return '—';
+                return `${r.ltg_rh}% <span style="color:#cbd5e1;">|</span> ${pct(r.rh_pct)}`;
+            };
+            const ltgCell = (r) => {
+                const v = r.ltg;
+                if (v == null) return '<span style="color:#94a3b8;">—</span>';
+                const c = pctColor(Math.round(v));   // same cool->red ramp as the percentiles
+                let s = `<span style="background:${c.bg}; color:${c.fg}; padding:1px 8px; border-radius:10px; font-weight:600;">${v}%</span>`;
+                // Ensemble columns also carry the member spread, so a confident 85% reads
+                // differently from an 85% mean spanning 20-99%.
+                if (r.ltg_min != null && r.ltg_max != null) {
+                    s += `<div style="font-size:0.68rem; color:#64748b; margin-top:2px;">min ${r.ltg_min}% &middot; max ${r.ltg_max}%${
+                        r.ltg_n ? ` <span style="color:#94a3b8;">(${r.ltg_n} mem)</span>` : ''}</div>`;
+                }
+                return s;
+            };
+            let html = ensNote + `<table style="width:100%; border-collapse:collapse; font-size:0.9rem;">
+              <thead><tr style="text-align:left; color:#475569; border-bottom:2px solid #e2e8f0;">
+                <th style="padding:8px 6px; width:150px; white-space:nowrap;">Day</th>
+                <th style="padding:8px 6px;">1000–700 mb Mean Flow</th>
+                <th style="padding:8px 6px;">Flow Regime</th>
+                <th style="padding:8px 6px;">Anvil Flow (300–150 mb)</th>
+                <th onclick="showBoxPlot('thompson')" title="Click for the monthly climatology box plot"
+                    style="padding:8px 6px; cursor:pointer; text-decoration:underline dotted;">Thompson Index</th>
+                <th onclick="showBoxPlot('rh75')" title="Click for the monthly climatology box plot"
+                    style="padding:8px 6px; cursor:pointer; text-decoration:underline dotted;">700–500 mb RH</th>
+                <th onclick="showBoxPlot('pwat')" title="Click for the monthly climatology box plot"
+                    style="padding:8px 6px; cursor:pointer; text-decoration:underline dotted;">PWAT (in)</th>
+                <th style="padding:8px 6px;">Cizek Lightning Probability</th>
+              </tr></thead><tbody>`;
+            if (!rows.length) {
+                html += `<tr><td colspan="8" style="padding:14px 6px; color:#94a3b8;">No 10Z rows for ${model.toUpperCase()} this run.</td></tr>`;
+            } else {
+                for (const r of rows) {
+                    html += `<tr style="border-bottom:1px solid #f1f5f9;">
+                      <td style="padding:8px 6px; font-weight:600; white-space:nowrap;">${r.day}<span style="color:#94a3b8; font-weight:400;"> · ${r.date}</span></td>
+                      <td style="padding:8px 6px;">${flow(r)}</td>
+                      <td style="padding:8px 6px;">${regimeCell(r.regime)}</td>
+                      <td style="padding:8px 6px;">${anvil(r)}</td>
+                      ${clickCell('thompson', r, r.ti, r.ti_pct, `${num(r.ti)} <span style="color:#cbd5e1;">|</span> ${pct(r.ti_pct)}`)}
+                      ${clickCell('rh75', r, r.ltg_rh, r.rh_pct, rhCell(r))}
+                      ${clickCell('pwat', r, r.pwat, r.pwat_pct, `${num(r.pwat)} <span style="color:#cbd5e1;">|</span> ${pct(r.pwat_pct)}`)}
+                      <td style="padding:8px 6px;">${ltgCell(r)}</td>
+                    </tr>`;
+                }
+            }
+            html += `</tbody></table>`;
+            document.getElementById('ltBody').innerHTML = html;
+        }
+
+        window.onload = initDashboard;
+    </script>
+    <div id="ltModal" onclick="if(event.target===this)hideLaunchThermo()"
+         style="display:none; position:fixed; inset:0; background:rgba(15,23,42,0.55); z-index:1000; align-items:flex-start; justify-content:center;">
+      <div style="background:#fff; margin-top:5vh; max-width:1180px; width:96%; max-height:88vh; overflow:auto; border-radius:10px; box-shadow:0 10px 40px rgba(0,0,0,0.3);">
+        <div style="display:flex; align-items:center; justify-content:space-between; padding:14px 18px; border-bottom:1px solid #e2e8f0; position:sticky; top:0; background:#fff;">
+          <div style="font-weight:700; color:#1e3a5f;">10Z Synoptic — <span id="ltSite">KXMR</span></div>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <label style="font-size:0.85rem; color:#475569;">Model:</label>
+            <select id="ltModel" onchange="renderLaunchThermoRuns(); renderLaunchThermo();" style="padding:4px 8px; border:1px solid #cbd5e1; border-radius:6px;"></select>
+            <button onclick="hideLaunchThermo()" style="border:none; background:#e2e8f0; border-radius:6px; padding:4px 10px; cursor:pointer;">✕</button>
+          </div>
+        </div>
+        <div id="ltRuns" style="padding:10px 18px 0; display:flex; align-items:center; flex-wrap:wrap;"></div>
+        <div id="ltBody" style="padding:6px 18px 18px;"></div>
+      </div>
+    </div>
+    <div id="bpModal" onclick="if(event.target===this)hideBoxPlot()"
+         style="display:none; position:fixed; inset:0; background:rgba(15,23,42,0.6); z-index:1100; align-items:flex-start; justify-content:center;">
+      <div style="background:#fff; margin-top:6vh; max-width:980px; width:96%; max-height:86vh; overflow:auto; border-radius:10px; box-shadow:0 10px 40px rgba(0,0,0,0.35);">
+        <div style="display:flex; align-items:center; justify-content:space-between; padding:12px 18px; border-bottom:1px solid #e2e8f0;">
+          <div style="font-weight:700; color:#1e3a5f;">Climatology &mdash; XMR</div>
+          <button onclick="hideBoxPlot()" style="border:none; background:#e2e8f0; border-radius:6px; padding:4px 10px; cursor:pointer;">✕</button>
+        </div>
+        <div id="bpBody" style="padding:14px 18px 18px;"></div>
+      </div>
+    </div>
+</body>
+</html>
