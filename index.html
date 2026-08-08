@@ -23,6 +23,10 @@
         td { border: 1px solid #cbd5e1; padding: 8px 6px; text-align: center; font-family: Arial, sans-serif; font-size: 0.9rem; font-weight: 600; white-space: nowrap; position: relative; }
         .time-col { background: #3b82f6; color: white; font-weight: bold; width: 95px; position: sticky; left: 0; }
         .href-interactive-col { background: #f8fafc; color: #2563eb; font-weight: bold; text-decoration: underline; border-left: 2px solid #cbd5e1 !important; }
+        /* A cell carried forward from an earlier run because PSU BUFKIT failed this pass.
+           Deliberately understated — the value is still a real forecast, just an older one. */
+        .cell-stale { border-bottom: 3px double #94a3b8 !important; }
+        .cell-stale::after { content: "*"; position: absolute; top: 0px; right: 3px; font-size: 0.62rem; color: #64748b; font-weight: bold; line-height: 1; }
         /* Second line inside an LLWS cell carrying the TAF WS group */
         .taf-group { display: block; font-size: 0.66rem; font-weight: bold; letter-spacing: 0.02em; opacity: 0.92; margin-top: 1px; }
 
@@ -406,8 +410,14 @@
                     let val = profile[activeMetric];
                     let props = getCellProperties(activeMetric, val, profile);
                     let cellId = `c_${lowerStn}_${m}_${timeKey.replace('/','_')}`;
+                    // Columns carried forward from an earlier run (PSU BUFKIT throttled us out
+                    // of this fetch) get a double underline + asterisk so a stale forecast is
+                    // never mistaken for a current one.
+                    const staleCls = profile.stale ? " cell-stale" : "";
+                    const staleTitle = profile.stale
+                        ? ` title="Carried forward from ${profile.stale} — BUFKIT fetch failed this run"` : "";
 
-                    tr.innerHTML += `<td id="${cellId}" class="${props.cls}" style="cursor:help;">${props.txt}</td>`;
+                    tr.innerHTML += `<td id="${cellId}" class="${props.cls}${staleCls}"${staleTitle} style="cursor:help;">${props.txt}</td>`;
 
                     setTimeout(() => {
                         const cellEl = document.getElementById(cellId);
@@ -619,6 +629,7 @@
                     • <strong>CT (table column):</strong> HREF Calibrated Thunder — the machine-learning-calibrated probability of at least one cloud-to-ground lightning flash within 20 km (12 mi) of the point, calibrated against observed NLDN strikes. The column header toggles between the 4-hour (default) and 1-hour accumulation windows; hover a cell for the spatial map at that hour.<br><br>
                     • <strong>Cal. Thunder Map:</strong> Full Space-Coast-domain spatial view of the calibrated-thunder probability field with a time slider (1–48 h). The window follows the toggle in the CT column header; if NOMADS posts only one window this cycle, the other is skipped automatically.<br><br>
                     • <strong>10Z Synoptic:</strong> Daily airmass panel at KXMR — 1000–700 mb mean flow and onshore/offshore regime, 300–150 mb anvil flow, Thompson Index, 700–500 mb mean RH and PWAT (each with its XMR monthly climatological percentile, clickable for a box-and-whisker plot), and the Cizek random-forest lightning probability.<br><br>
+                    <span style="color:#64748b; font-size:0.92em;"><em>A cell with a <strong>double underline and an asterisk*</strong> was carried forward from an earlier run: PSU's BUFKIT server throttled the fetch, so the last good column is shown rather than a blank one. It is a real forecast, just an older cycle — hover for the run it came from. Only the BUFKIT columns (GFS/RAP/HRRR at airports) can go stale this way; RRFS, REFS, ECMWF and the pads come from AWS/ECMWF and are unaffected.</em></span><br><br>
                     <span style="color:#64748b; font-size:0.92em;"><em>LLWS caveat by data source: the BUFKIT columns (GFS/RAP/HRRR at the airports) carry ~40 levels and resolve a shallow nocturnal jet well. The raw-GRIB columns — every launch pad, plus RRFS, REFS and ECMWF — are built on mandatory isobaric levels, giving only two or three levels below 2,000 ft, so an interpolated 2,000 ft AGL level is always spliced in. Treat GRIB-column LLWS as a bulk surface-to-2,000 ft estimate; it will systematically under-read thin, strongly-sheared jets. ECMWF at 12 levels is the coarsest of these.</em></span><br><br>
                     <span style="color:#64748b; font-size:0.92em;"><em>Note: the REFS ensemble-mean product carries only a single isobaric humidity level, so the moisture-based fields (ceiling, visibility) cannot be reliably resolved on the REFS column and may read CLR/10 sm. Its PBL winds and LLWS remain valid.</em></span><br><br>
                     <span style="color:#64748b; font-size:0.92em;"><em>Note: the ECMWF column is the IFS HRES at 0.25° from ECMWF Open Data (CC-BY-4.0), point-extracted on a coarse 12-level pressure grid and posted 3-hourly. PBL winds are reliable; ceiling and visibility are advisory only because the vertical humidity structure is under-resolved. Data © 2026 ECMWF.</em></span>
@@ -637,8 +648,14 @@
             const tafTxt = p.llws_taf
                 ? `<br>• TAF group: <strong style="letter-spacing:0.03em;">${p.llws_taf}</strong>`
                 : `<br>• TAF group: <span style="color:#94a3b8;">below the 20 kt threshold</span>`;
+            const staleNote = p.stale
+                ? `<div style="margin-bottom:6px; padding:4px 6px; background:#fef3c7; color:#78350f; border-radius:3px; font-size:0.75rem;">
+                     <strong>Carried forward</strong> from ${p.stale} — PSU BUFKIT did not respond this run.
+                     RRFS/REFS/ECMWF in the same row are current.</div>`
+                : "";
             popupCard.innerHTML = `
                 <div class="popup-header">${model.toUpperCase()} Aviation Diagnostics</div>
+                ${staleNote}
                 • Ceilings: <strong>${p.ceiling >= 23000 ? 'Clear' : p.ceiling + ' ft'}</strong><br>
                 • Visibility: <strong>${p.vis} sm</strong><br>
                 • Mean Boundary Wind: <strong>${p.mom_mean} kt</strong><br>
@@ -703,13 +720,92 @@
         // nothing. So DPROG/DT steps by TIME at each model's own cycle cadence, and we pick the
         // stored snapshot nearest that target time.
         const MODEL_CYCLE_H = { gfs: 6, ecmwf: 6, gefs: 6, rrfs: 6, refs: 6, rap: 1, hrrr: 1 };
+        // Synthetic dropdown entry: not a model, a side-by-side of two of them. It inherits
+        // the 6-hourly cycle of its members so the dprog/dt buttons keep working.
+        const LT_CMP = '__cmp_gfs_ecmwf__';
+        MODEL_CYCLE_H[LT_CMP] = 6;
+        // Compare mode pits any two models against each other. Color is tied to the SLOT, not
+        // the model: A is always red, B always violet, so a dot's color means the same thing
+        // whichever pair is loaded. Defaults to the GFS/ECMWF pairing.
+        const LT_CMP_COLORS = ['#dc2626', '#7c3aed'];
+        let ltCmpA = 'gfs', ltCmpB = 'ecmwf';
+        function ltCmpSeries() {
+            return [
+                { key: ltCmpA, label: (ltCmpA || '').toUpperCase(), color: LT_CMP_COLORS[0], slot: 'A' },
+                { key: ltCmpB, label: (ltCmpB || '').toUpperCase(), color: LT_CMP_COLORS[1], slot: 'B' },
+            ];
+        }
+        function ltIsCompare() {
+            const s = document.getElementById('ltModel');
+            return !!s && s.value === LT_CMP;
+        }
+        // Which models the panel can compare. Everything build_launch_thermo emitted for this
+        // site is fair game — including the ensembles and the short-range models.
+        function ltCmpModels() {
+            const t = ltActiveThermo();
+            return (t && t.models) || (launchThermo && launchThermo.models) || [];
+        }
+        function ltSetCmp(slot, val) {
+            if (slot === 'A') ltCmpA = val; else ltCmpB = val;
+            ltRenderCmpPickers();
+            renderLaunchThermoRuns();
+            renderLaunchThermo();
+        }
+        function ltSwapCmp() {
+            const t = ltCmpA; ltCmpA = ltCmpB; ltCmpB = t;
+            ltRenderCmpPickers();
+            renderLaunchThermoRuns();
+            renderLaunchThermo();
+        }
+        // The A/B pickers live beside the model dropdown and only exist in compare mode.
+        function ltRenderCmpPickers() {
+            const host = document.getElementById('ltCmpPick');
+            if (!host) return;
+            if (!ltIsCompare()) { host.innerHTML = ''; host.style.display = 'none'; return; }
+            host.style.display = 'flex';
+            const models = ltCmpModels();
+            const sel = (slot, cur, color) => `
+                <select onchange="ltSetCmp('${slot}', this.value)"
+                        style="padding:3px 6px; border:1px solid ${color}; border-radius:6px;
+                               color:${color}; font-weight:700; font-size:0.8rem; background:#fff;">
+                    ${models.map(m => `<option value="${m}"${m === cur ? ' selected' : ''}>${m.toUpperCase()}</option>`).join('')}
+                </select>`;
+            host.innerHTML = sel('A', ltCmpA, LT_CMP_COLORS[0])
+                + `<button onclick="ltSwapCmp()" title="Swap A and B"
+                     style="border:1px solid #cbd5e1; background:#fff; border-radius:6px;
+                            padding:3px 7px; cursor:pointer; color:#475569; font-size:0.8rem;">\u21c4</button>`
+                + sel('B', ltCmpB, LT_CMP_COLORS[1]);
+        }
+        // Rows keyed by day so the two models line up even when one runs further out.
+        // ECMWF open-data stops at 144 h while GFS keeps going, so the tail days are
+        // legitimately GFS-only rather than a bug.
+        function ltJoinByDay(thermo) {
+            const by = (thermo && thermo.by_model) || {};
+            const idx = {};
+            ltCmpSeries().forEach(s => {
+                (by[s.key] || []).forEach(r => {
+                    const k = r.sort || r.date;
+                    if (!k) return;
+                    (idx[k] = idx[k] || { key: k, day: r.day, date: r.date, month: r.month })[s.key] = r;
+                });
+            });
+            return Object.values(idx).sort((a, b) => String(a.key).localeCompare(String(b.key)));
+        }
         const LT_STEPS = 4;   // current + 3 back
         function ltParseTs(ts) {
             if (!ts) return null;
             const d = new Date(String(ts).replace(' UTC', 'Z').replace(' ', 'T'));
             return isNaN(d.getTime()) ? null : d;
         }
-        function ltStepHours(model) { return MODEL_CYCLE_H[model] || 1; }
+        function ltStepHours(model) {
+            // In compare mode step by the COARSER of the two cycles, so a button press always
+            // lands on a run where both models could have refreshed (pairing HRRR at 1 h with
+            // GFS at 6 h has to step 6 h, or the GFS side just repeats itself).
+            if (model === LT_CMP) {
+                return Math.max(MODEL_CYCLE_H[ltCmpA] || 1, MODEL_CYCLE_H[ltCmpB] || 1);
+            }
+            return MODEL_CYCLE_H[model] || 1;
+        }
         function ltResolveRun(model, k) {
             // k = 0 is always the current run; k>0 targets (k * cycle) hours before it.
             if (!launchThermoRuns || !launchThermoRuns.length) {
@@ -781,8 +877,17 @@
             ltRunIdx = 0;
             document.getElementById('ltSite').textContent = launchThermo.site || 'KXMR';
             const sel = document.getElementById('ltModel');
-            sel.innerHTML = launchThermo.models
+            let opts = launchThermo.models
                 .map(m => `<option value="${m}">${m.toUpperCase()}</option>`).join('');
+            // Compare needs any two models; seed the pair with whatever's actually present.
+            const avail = launchThermo.models || [];
+            if (avail.length >= 2) {
+                if (!avail.includes(ltCmpA)) ltCmpA = avail[0];
+                if (!avail.includes(ltCmpB)) ltCmpB = avail.find(m => m !== ltCmpA) || avail[1];
+                opts += `<option value="${LT_CMP}">\u2696 Compare two models\u2026</option>`;
+            }
+            sel.innerHTML = opts;
+            ltRenderCmpPickers();
             renderLaunchThermoRuns();
             renderLaunchThermo();
             document.getElementById('ltModal').style.display = 'flex';
@@ -819,12 +924,21 @@
             }
             if (!Object.keys(stat).length) return null;
 
-            // this run's rows for the selected model
+            // this run's rows. In compare mode both series are overlaid, each in its own
+            // color, so model spread reads directly against the climatological spread.
             const thermo = ltActiveThermo();
             const model = document.getElementById('ltModel').value;
-            const rows = ((thermo.by_model || {})[model] || [])
-                .map(r => ({ m: r.month, v: cfg.get(r), lbl: r.date }))
-                .filter(d => d.m != null && d.v != null);
+            const series = ltIsCompare()
+                ? ltCmpSeries().map(s => ({ color: s.color, label: s.label, key: s.key }))
+                : [{ color: '#dc2626', label: (model || '').toUpperCase(), key: model }];
+            const rows = [];
+            series.forEach(s => {
+                ((thermo.by_model || {})[s.key] || []).forEach(r => {
+                    const v = cfg.get(r);
+                    if (r.month != null && v != null)
+                        rows.push({ m: r.month, v: v, lbl: r.date, color: s.color, series: s.label });
+                });
+            });
             rows.forEach(d => { lo = Math.min(lo, d.v); hi = Math.max(hi, d.v); });
 
             const W = 900, H = 430, ml = 62, mr = 18, mt = 26, mb = 62;
@@ -867,17 +981,29 @@
                 grp.forEach((d, i) => {
                     const off = n === 1 ? 0 : (i - (n - 1) / 2) * Math.min(bw / Math.max(1, n - 1), 11);
                     const cx = X(+m) + off, cy = Y(d.v);
-                    s += `<circle cx="${cx}" cy="${cy}" r="4.2" fill="#dc2626" stroke="#ffffff" stroke-width="1.2"/>`;
-                    s += `<title>${d.lbl}: ${d.v}${cfg.unit}</title>`;
-                    s += `<text x="${cx}" y="${cy - 8}" text-anchor="middle" font-size="8.5" fill="#dc2626" font-weight="600">${d.lbl.split(' ')[1]}</text>`;
+                    const col = d.color || '#dc2626';
+                    s += `<circle cx="${cx}" cy="${cy}" r="4.2" fill="${col}" stroke="#ffffff" stroke-width="1.2"/>`;
+                    s += `<title>${d.series ? d.series + ' · ' : ''}${d.lbl}: ${d.v}${cfg.unit}</title>`;
+                    // With two series the slots get crowded fast; only label when there's room.
+                    if (n <= 4) s += `<text x="${cx}" y="${cy - 8}" text-anchor="middle" font-size="8.5" fill="${col}" font-weight="600">${d.lbl.split(' ')[1]}</text>`;
                 });
             });
             s += `<text x="${W / 2}" y="16" text-anchor="middle" font-size="12" font-weight="700" fill="#0f172a">Monthly Distribution of ${cfg.label}</text>`;
+            if (ltIsCompare()) {
+                let lx = ml + 6;
+                ltCmpSeries().forEach(sr => {
+                    s += `<circle cx="${lx + 5}" cy="${mt - 8}" r="4.2" fill="${sr.color}" stroke="#fff" stroke-width="1.2"/>`;
+                    s += `<text x="${lx + 14}" y="${mt - 4.5}" font-size="10" fill="#334155" font-weight="600">${sr.label}</text>`;
+                    lx += 66;
+                });
+            }
             s += `<text x="${W / 2}" y="${H - 8}" text-anchor="middle" font-size="10" fill="#475569">Month</text>`;
             s += `</svg>`;
             return s;
         }
-        function ltBoxPlotOneSVG(varName, month, value, label, pctRank) {
+        // `extra` (optional) is a second point to overlay: {value, label, color, pct}.
+        // Used by compare mode so a day's popup shows both models against the same box.
+        function ltBoxPlotOneSVG(varName, month, value, label, pctRank, extra) {
             const cfg = LT_BOX_VARS[varName];
             const tbl = (climoTables || {})[varName];
             const pts = (climoTables || {}).points;
@@ -895,6 +1021,7 @@
             };
             let lo = st.min, hi = st.max;
             if (value != null) { lo = Math.min(lo, value); hi = Math.max(hi, value); }
+            if (extra && extra.value != null) { lo = Math.min(lo, extra.value); hi = Math.max(hi, extra.value); }
             const W = 560, H = 430, ml = 74, mr = 190, mt = 34, mb = 46;
             const pw = W - ml - mr, ph = H - mt - mb;
             const pad = (hi - lo) * 0.05 || 1;
@@ -926,29 +1053,50 @@
                 s += `<line x1="${x0 + bw}" y1="${Y(val)}" x2="${x0 + bw + 12}" y2="${Y(val)}" stroke="#cbd5e1"/>`;
                 s += `<text x="${x0 + bw + 16}" y="${Y(val) + 3.5}" font-size="9.5" fill="#64748b">${nm} \u00a0${fmt(val)}${cfg.unit}</text>`;
             });
-            if (value != null) {
-                const vy = Y(value);
-                s += `<line x1="${ml}" y1="${vy}" x2="${x0 + bw + 12}" y2="${vy}" stroke="#dc2626" stroke-width="1" stroke-dasharray="4 3"/>`;
-                s += `<circle cx="${cx}" cy="${vy}" r="6" fill="#dc2626" stroke="#fff" stroke-width="1.6"/>`;
-                const above = vy > mt + 22;
-                s += `<text x="${cx + bw / 2 + 16}" y="${vy + (above ? -8 : 16)}" font-size="11" font-weight="700" fill="#dc2626">
-                        ${label}: ${value}${cfg.unit}${pctRank != null ? ` (${pctRank}th)` : ''}</text>`;
-            }
+            // Overlay the forecast point(s). In compare mode the two dots are nudged apart
+            // horizontally so a near-tie still reads as two models rather than one blob.
+            const marks = [];
+            if (value != null) marks.push({ value, label, pct: pctRank,
+                                            color: (extra ? ltCmpSeries()[0].color : '#dc2626') });
+            if (extra && extra.value != null) marks.push(extra);
+            marks.forEach((p, i) => {
+                const vy = Y(p.value);
+                const dx = marks.length > 1 ? (i === 0 ? -13 : 13) : 0;
+                const col = p.color || '#dc2626';
+                s += `<line x1="${ml}" y1="${vy}" x2="${x0 + bw + 12}" y2="${vy}" stroke="${col}" stroke-width="1" stroke-dasharray="4 3" stroke-opacity="0.75"/>`;
+                s += `<circle cx="${cx + dx}" cy="${vy}" r="6" fill="${col}" stroke="#fff" stroke-width="1.6"/>`;
+                s += `<title>${p.label}: ${p.value}${cfg.unit}</title>`;
+                // Stagger the text vertically too, so two close values don't overprint.
+                const above = vy > mt + 30;
+                const ty = vy + (above ? (i === 0 ? -9 : -22) : (i === 0 ? 17 : 30));
+                s += `<text x="${x0 + bw + 16}" y="${ty}" font-size="11" font-weight="700" fill="${col}">
+                        ${p.label}: ${p.value}${cfg.unit}${p.pct != null ? ` (${p.pct}th)` : ''}</text>`;
+            });
             s += `<text x="${cx}" y="${H - mb + 20}" text-anchor="middle" font-size="11" fill="#334155" font-weight="600">${MN[month - 1]} climatology</text>`;
             s += `<text x="${W / 2}" y="18" text-anchor="middle" font-size="12.5" font-weight="700" fill="#0f172a">${cfg.label} \u2014 ${MN[month - 1]}</text>`;
             s += `</svg>`;
             return s;
         }
-        function showBoxPlotDay(varName, month, value, label, pctRank) {
-            const svg = ltBoxPlotOneSVG(varName, month, value, label, pctRank);
+        // v2 (compare-aware): trailing args carry the second model's value/percentile.
+        function showBoxPlotDay(varName, month, value, label, pctRank, val2, pct2) {
+            const cmp = ltIsCompare() && val2 != null;
+            const cfg = LT_BOX_VARS[varName] || { unit: '' };
+            const p1 = cmp ? `${ltCmpSeries()[0].label} ${label}` : label;
+            const extra = cmp ? { value: val2, label: `${ltCmpSeries()[1].label} ${label}`,
+                                  pct: pct2, color: ltCmpSeries()[1].color } : null;
+            const svg = ltBoxPlotOneSVG(varName, month, value, p1, pctRank, extra);
             const body = document.getElementById('bpBody');
             if (!svg) { body.innerHTML = '<div style="padding:20px; color:#94a3b8;">No climatology available for that variable.</div>'; }
             else {
                 const model = document.getElementById('ltModel').value;
+                const who = cmp
+                    ? `<span style="color:${ltCmpSeries()[0].color}; font-weight:600;">${ltCmpSeries()[0].label}</span> and
+                       <span style="color:${ltCmpSeries()[1].color}; font-weight:600;">${ltCmpSeries()[1].label}</span> for ${label}
+                       ${val2 != null && value != null ? `(spread ${Math.abs(value - val2).toFixed(Math.abs(value) < 5 ? 2 : 1)}${cfg.unit})` : ''}`
+                    : `<span style="color:#dc2626; font-weight:600;">Red dot</span> is ${model.toUpperCase()} ${label}`;
                 body.innerHTML = svg + `<div style="font-size:0.78rem; color:#64748b; margin-top:8px;">
                     Box = 25th\u201375th percentile, line = median, whiskers = 1st/99th, open circles = record min/max
-                    (XMR climatology for this month). <span style="color:#dc2626; font-weight:600;">Red dot</span> is
-                    ${model.toUpperCase()} ${label}. <a href="#" onclick="showBoxPlot('${varName}'); return false;"
+                    (XMR climatology for this month). ${who}. <a href="#" onclick="showBoxPlot('${varName}'); return false;"
                     style="color:#1e3a5f;">See all 12 months</a>.</div>`;
             }
             document.getElementById('bpModal').style.display = 'flex';
@@ -959,15 +1107,213 @@
             const model = document.getElementById('ltModel').value;
             if (!svg) { body.innerHTML = '<div style="padding:20px; color:#94a3b8;">No climatology available for that variable.</div>'; }
             else {
+                const who = ltIsCompare()
+                    ? ltCmpSeries().map(s => `<span style="color:${s.color}; font-weight:600;">${s.label}</span>`).join(' and ')
+                    : `<span style="color:#dc2626; font-weight:600;">${model.toUpperCase()}</span>`;
                 body.innerHTML = svg + `<div style="font-size:0.78rem; color:#64748b; margin-top:8px;">
                     Box = 25th\u201375th percentile, line = median, whiskers = 1st/99th, open circles = record min/max
-                    (XMR climatology). <span style="color:#dc2626; font-weight:600;">Red dots</span> are this run's
-                    ${model.toUpperCase()} forecast days, placed in their own month.</div>`;
+                    (XMR climatology). Dots are this run's ${who} forecast days, placed in their own month.</div>`;
             }
             document.getElementById('bpModal').style.display = 'flex';
         }
         function hideBoxPlot() { document.getElementById('bpModal').style.display = 'none'; }
+
+        // ---- GFS vs ECMWF comparison view -------------------------------------------------
+        // What counts as a meaningful disagreement per field. These are forecaster judgement
+        // calls, not statistics: `watch` is roughly where a difference starts to change the
+        // 10Z story, `split` is where the two models are describing materially different days.
+        const LT_CMP_TOL = {
+            ti:   { watch: 5,    split: 10,   unit: '',     dp: 1 },
+            rh:   { watch: 10,   split: 20,   unit: '%',    dp: 0 },
+            pwat: { watch: 0.25, split: 0.50, unit: ' in',  dp: 2 },
+            ltg:  { watch: 15,   split: 30,   unit: '%',    dp: 0 },
+            spd:  { watch: 8,    split: 15,   unit: ' kt',  dp: 0 },
+            dir:  { watch: 40,   split: 80,   unit: '\u00b0', dp: 0 },
+        };
+        // Signed smallest angle from b to a, so 350\u00b0 vs 010\u00b0 reads as 20\u00b0, not 340\u00b0.
+        function ltAngDiff(a, b) {
+            if (a == null || b == null) return null;
+            return ((a - b + 540) % 360) - 180;
+        }
+        function ltDeltaChip(d, tolKey, showSign) {
+            const t = LT_CMP_TOL[tolKey];
+            if (d == null || !t) return '<span style="color:#cbd5e1;">\u2014</span>';
+            const mag = Math.abs(d);
+            const sty = mag >= t.split ? 'background:#fee2e2; color:#991b1b; border:1px solid #fca5a5;'
+                      : mag >= t.watch ? 'background:#fef3c7; color:#78350f; border:1px solid #fcd34d;'
+                      :                  'background:#f1f5f9; color:#64748b; border:1px solid #e2e8f0;';
+            const txt = (showSign === false)
+                ? mag.toFixed(t.dp)
+                : (d > 0 ? '+' : d < 0 ? '\u2212' : '\u00b1') + mag.toFixed(t.dp);
+            const tag = mag >= t.split ? ' title="models materially disagree on this field"'
+                      : mag >= t.watch ? ' title="worth a look"' : ' title="models agree"';
+            return `<span${tag} style="${sty} padding:1px 7px; border-radius:10px; font-weight:600; font-size:0.78rem;">${txt}${t.unit}</span>`;
+        }
+
+        function renderLaunchThermoCompare() {
+            const thermo = ltActiveThermo();
+            const [S1, S2] = ltCmpSeries();
+            if (S1.key === S2.key) {
+                document.getElementById('ltBody').innerHTML =
+                    `<div style="padding:18px 6px; color:#b45309;">Pick two <em>different</em> models to compare
+                     \u2014 both selectors are on ${S1.label}.</div>`;
+                return;
+            }
+            const joined = ltJoinByDay(thermo);
+
+            const pctColor = (v) => {
+                if (v == null) return null;
+                if (v >= 90) return { bg: '#dc2626', fg: '#ffffff' };
+                if (v >= 75) return { bg: '#f59e0b', fg: '#3a2a00' };
+                if (v >= 50) return { bg: '#fde68a', fg: '#3a2a00' };
+                if (v >= 25) return { bg: '#dbeafe', fg: '#1e3a5f' };
+                return { bg: '#e0f2fe', fg: '#0c4a6e' };
+            };
+            const pct = (v) => {
+                if (v == null) return '';
+                const c = pctColor(v);
+                return ` <span style="background:${c.bg}; color:${c.fg}; padding:0 6px; border-radius:9px; font-weight:600; font-size:0.74rem;">${v}<sup>th</sup></span>`;
+            };
+            const REGIME_CLASS = { NE:'on', E:'on', SE:'on', NW:'off', W:'off', SW:'off', N:'along', S:'along' };
+            const regimeChip = (v) => {
+                if (!v) return '<span style="color:#cbd5e1;">\u2014</span>';
+                const k = REGIME_CLASS[v] || 'along';
+                const style = k === 'on'  ? 'background:#dbeafe; color:#0c4a6e;'
+                            : k === 'off' ? 'background:#fed7aa; color:#7c2d12;'
+                            :               'background:#dcfce7; color:#14532d;';
+                return `<span style="${style} padding:1px 8px; border-radius:10px; font-weight:600;">${v}</span>`;
+            };
+            const flowTxt = (r) => (!r || r.mf_dir == null) ? '\u2014' : `${r.mf_dir}\u00b0 / ${r.mf_spd == null ? '\u2014' : r.mf_spd} kt`;
+            const anvilTxt = (r) => (!r || r.av_dir == null) ? '\u2014' : `${r.av_dir}\u00b0 / ${r.av_spd == null ? '\u2014' : r.av_spd} kt`;
+            const numTxt = (v, dp, unit) => v == null ? '\u2014' : (dp != null ? Number(v).toFixed(dp) : v) + (unit || '');
+
+            // Clickable climatology cell: always hands BOTH models to the box plot so the popup
+            // shows two dots regardless of which of the three sub-rows was clicked.
+            const clk = (varName, j, v1, p1, v2, p2, inner, extraStyle) => {
+                const style = `padding:6px; ${extraStyle || ''}`;
+                if (j.month == null || v1 == null) return `<td style="${style}">${inner}</td>`;
+                return `<td onclick="showBoxPlotDay('${varName}', ${j.month}, ${v1}, '${j.date}', ${p1 == null ? 'null' : p1}, ${v2 == null ? 'null' : v2}, ${p2 == null ? 'null' : p2})"
+                          title="Click to see both models on the ${j.date} climatology"
+                          style="${style} cursor:pointer;">${inner}</td>`;
+            };
+
+            // Header note: how much of the table the two models actually overlap on.
+            const bothN = joined.filter(j => j[S1.key] && j[S2.key]).length;
+            const onlyN = joined.length - bothN;
+            const note = `<div style="font-size:0.78rem; color:#475569; margin:2px 0 10px;">
+                Side-by-side 10Z comparison.
+                <span style="color:${S1.color}; font-weight:600;">${S1.label}</span> vs
+                <span style="color:${S2.color}; font-weight:600;">${S2.label}</span>, with a
+                \u0394 row per day. Chips turn <span style="background:#fef3c7; color:#78350f; padding:0 5px; border-radius:8px;">amber</span>
+                where the models start to diverge and <span style="background:#fee2e2; color:#991b1b; padding:0 5px; border-radius:8px;">red</span>
+                where they tell materially different stories. Percentile badges and climatology
+                pop-ups work exactly as they do on the single-model views \u2014 clicking a cell now
+                plots both dots.
+                ${onlyN ? `<br><span style="color:#94a3b8;">${bothN} day${bothN === 1 ? '' : 's'} carry both models;
+                    ${onlyN} day${onlyN === 1 ? '' : 's'} ${onlyN === 1 ? 'has' : 'have'} only one \u2014 the models run to
+                    different lengths (ECMWF open data stops at 144 h, RAP and HRRR far sooner), so
+                    those rows are a range limit rather than a failure.</span>` : ''}
+                ${bothN === 0 ? `<br><span style="color:#991b1b; font-weight:600;">These two models share no
+                    10Z days in this run \u2014 nothing to difference. Pair a short-range model with another
+                    short-range model, or with a global one on the near days.</span>` : ''}
+            </div>`;
+
+            let html = note + `<table style="width:100%; border-collapse:collapse; font-size:0.88rem;">
+              <thead><tr style="text-align:left; color:#475569; border-bottom:2px solid #e2e8f0;">
+                <th style="padding:8px 6px; width:118px; white-space:nowrap;">Day</th>
+                <th style="padding:8px 6px; width:58px;"></th>
+                <th style="padding:8px 6px;">1000\u2013700 mb Mean Flow</th>
+                <th style="padding:8px 6px;">Flow Regime</th>
+                <th style="padding:8px 6px;">Anvil Flow (300\u2013150 mb)</th>
+                <th onclick="showBoxPlot('thompson')" title="Click for the monthly climatology box plot"
+                    style="padding:8px 6px; cursor:pointer; text-decoration:underline dotted;">Thompson Index</th>
+                <th onclick="showBoxPlot('rh75')" title="Click for the monthly climatology box plot"
+                    style="padding:8px 6px; cursor:pointer; text-decoration:underline dotted;">700\u2013500 mb RH</th>
+                <th onclick="showBoxPlot('pwat')" title="Click for the monthly climatology box plot"
+                    style="padding:8px 6px; cursor:pointer; text-decoration:underline dotted;">PWAT (in)</th>
+                <th style="padding:8px 6px;">Cizek Lightning</th>
+              </tr></thead><tbody>`;
+
+            if (!joined.length) {
+                html += `<tr><td colspan="9" style="padding:14px 6px; color:#94a3b8;">No 10Z rows for either model this run.</td></tr>`;
+            } else {
+                for (const j of joined) {
+                    const a = j[S1.key] || null, b = j[S2.key] || null;
+                    const has2 = !!b;
+                    const dTi   = (a && b && a.ti != null && b.ti != null) ? a.ti - b.ti : null;
+                    const dRh   = (a && b && a.ltg_rh != null && b.ltg_rh != null) ? a.ltg_rh - b.ltg_rh : null;
+                    const dPw   = (a && b && a.pwat != null && b.pwat != null) ? a.pwat - b.pwat : null;
+                    const dLtg  = (a && b && a.ltg != null && b.ltg != null) ? a.ltg - b.ltg : null;
+                    const dMfD  = (a && b) ? ltAngDiff(a.mf_dir, b.mf_dir) : null;
+                    const dMfS  = (a && b && a.mf_spd != null && b.mf_spd != null) ? a.mf_spd - b.mf_spd : null;
+                    const dAvD  = (a && b) ? ltAngDiff(a.av_dir, b.av_dir) : null;
+                    const dAvS  = (a && b && a.av_spd != null && b.av_spd != null) ? a.av_spd - b.av_spd : null;
+
+                    // Regime agreement is judged on the onshore/offshore CLASS first: SE vs E
+                    // are different octants but the same story, and that's what matters here.
+                    let regimeVerdict;
+                    if (!a || !b || !a.regime || !b.regime) regimeVerdict = '<span style="color:#cbd5e1;">\u2014</span>';
+                    else if (a.regime === b.regime) regimeVerdict = '<span style="color:#15803d; font-weight:600; font-size:0.78rem;">\u2713 agree</span>';
+                    else if ((REGIME_CLASS[a.regime] || 'along') === (REGIME_CLASS[b.regime] || 'along'))
+                        regimeVerdict = '<span title="different octant, same onshore/offshore class" style="color:#78350f; background:#fef3c7; padding:1px 7px; border-radius:10px; font-weight:600; font-size:0.76rem;">same class</span>';
+                    else regimeVerdict = '<span title="onshore vs offshore disagreement" style="color:#991b1b; background:#fee2e2; padding:1px 7px; border-radius:10px; font-weight:600; font-size:0.76rem;">SPLIT</span>';
+
+                    const tag = (s) => `<td style="padding:6px; color:${s.color}; font-weight:700; font-size:0.76rem; white-space:nowrap;">${s.label}</td>`;
+                    const rowTop = 'border-top:1px solid #e2e8f0;';
+
+                    // --- series 1 row (day cell spans all three) ---
+                    html += `<tr style="${rowTop}">
+                      <td rowspan="3" style="padding:6px; font-weight:600; white-space:nowrap; vertical-align:top; ${rowTop}">
+                        ${j.day || ''}<div style="color:#94a3b8; font-weight:400; font-size:0.78rem;">${j.date || ''}</div></td>
+                      ${tag(S1)}
+                      <td style="padding:6px;">${flowTxt(a)}</td>
+                      <td style="padding:6px;">${regimeChip(a && a.regime)}</td>
+                      <td style="padding:6px;">${anvilTxt(a)}</td>
+                      ${clk('thompson', j, a && a.ti, a && a.ti_pct, b && b.ti, b && b.ti_pct, numTxt(a && a.ti, 1) + pct(a && a.ti_pct))}
+                      ${clk('rh75', j, a && a.ltg_rh, a && a.rh_pct, b && b.ltg_rh, b && b.rh_pct, numTxt(a && a.ltg_rh, 0, '%') + pct(a && a.rh_pct))}
+                      ${clk('pwat', j, a && a.pwat, a && a.pwat_pct, b && b.pwat, b && b.pwat_pct, numTxt(a && a.pwat, 2) + pct(a && a.pwat_pct))}
+                      <td style="padding:6px;">${a && a.ltg != null ? a.ltg + '%' : '\u2014'}</td>
+                    </tr>`;
+
+                    // --- series 2 row ---
+                    html += `<tr>
+                      ${tag(S2)}
+                      <td style="padding:6px;">${flowTxt(b)}</td>
+                      <td style="padding:6px;">${regimeChip(b && b.regime)}</td>
+                      <td style="padding:6px;">${anvilTxt(b)}</td>
+                      ${clk('thompson', j, a && a.ti, a && a.ti_pct, b && b.ti, b && b.ti_pct, numTxt(b && b.ti, 1) + pct(b && b.ti_pct))}
+                      ${clk('rh75', j, a && a.ltg_rh, a && a.rh_pct, b && b.ltg_rh, b && b.rh_pct, numTxt(b && b.ltg_rh, 0, '%') + pct(b && b.rh_pct))}
+                      ${clk('pwat', j, a && a.pwat, a && a.pwat_pct, b && b.pwat, b && b.pwat_pct, numTxt(b && b.pwat, 2) + pct(b && b.pwat_pct))}
+                      <td style="padding:6px;">${b && b.ltg != null ? b.ltg + '%' : '\u2014'}</td>
+                    </tr>`;
+
+                    // --- delta row ---
+                    const dim = has2 ? '' : 'opacity:0.35;';
+                    html += `<tr style="background:#fafbfc; ${dim}">
+                      <td style="padding:6px; color:#94a3b8; font-weight:700; font-size:0.76rem;">\u0394</td>
+                      <td style="padding:6px;">${has2 ? ltDeltaChip(dMfD, 'dir') + ' ' + ltDeltaChip(dMfS, 'spd') : '<span style="color:#cbd5e1;">\u2014</span>'}</td>
+                      <td style="padding:6px;">${regimeVerdict}</td>
+                      <td style="padding:6px;">${has2 ? ltDeltaChip(dAvD, 'dir') + ' ' + ltDeltaChip(dAvS, 'spd') : '<span style="color:#cbd5e1;">\u2014</span>'}</td>
+                      <td style="padding:6px;">${ltDeltaChip(dTi, 'ti')}</td>
+                      <td style="padding:6px;">${ltDeltaChip(dRh, 'rh')}</td>
+                      <td style="padding:6px;">${ltDeltaChip(dPw, 'pwat')}</td>
+                      <td style="padding:6px;">${ltDeltaChip(dLtg, 'ltg')}</td>
+                    </tr>`;
+                }
+            }
+            html += `</tbody></table>
+              <div style="font-size:0.74rem; color:#94a3b8; margin-top:10px;">
+                \u0394 is ${S1.label} minus ${S2.label}. Direction deltas use the smallest signed angle,
+                so 350\u00b0 against 010\u00b0 reads as 20\u00b0. Regime agreement is judged on the
+                onshore/offshore class first \u2014 SE against E is a different octant but the same
+                story, while an onshore/offshore disagreement is flagged SPLIT.
+              </div>`;
+            document.getElementById('ltBody').innerHTML = html;
+        }
+
         function renderLaunchThermo() {
+            // The synthetic 'GFS vs ECMWF' dropdown entry renders a different table entirely.
+            if (ltIsCompare()) { renderLaunchThermoCompare(); return; }
             const thermo = ltActiveThermo();
             const model = document.getElementById('ltModel').value;
             const rows = (thermo.by_model && thermo.by_model[model]) || [];
@@ -1071,7 +1417,8 @@
           <div style="font-weight:700; color:#1e3a5f;">10Z Synoptic — <span id="ltSite">KXMR</span></div>
           <div style="display:flex; align-items:center; gap:8px;">
             <label style="font-size:0.85rem; color:#475569;">Model:</label>
-            <select id="ltModel" onchange="renderLaunchThermoRuns(); renderLaunchThermo();" style="padding:4px 8px; border:1px solid #cbd5e1; border-radius:6px;"></select>
+            <select id="ltModel" onchange="ltRenderCmpPickers(); renderLaunchThermoRuns(); renderLaunchThermo();" style="padding:4px 8px; border:1px solid #cbd5e1; border-radius:6px;"></select>
+            <span id="ltCmpPick" style="display:none; align-items:center; gap:5px;"></span>
             <button onclick="hideLaunchThermo()" style="border:none; background:#e2e8f0; border-radius:6px; padding:4px 10px; cursor:pointer;">✕</button>
           </div>
         </div>
