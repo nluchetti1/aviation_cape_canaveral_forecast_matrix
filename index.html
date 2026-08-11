@@ -719,7 +719,15 @@
         // consecutive hourly snapshots of those columns are identical and stepping run-by-run shows
         // nothing. So DPROG/DT steps by TIME at each model's own cycle cadence, and we pick the
         // stored snapshot nearest that target time.
-        const MODEL_CYCLE_H = { gfs: 6, ecmwf: 6, gefs: 6, rrfs: 6, refs: 6, rap: 1, hrrr: 1 };
+        const MODEL_CYCLE_H = { gfs: 6, ecmwf: 6, gefs: 6, ecens: 6, rrfs: 6, refs: 6, rap: 1, hrrr: 1 };
+        // Display names for the model keys. "ecens".toUpperCase() reads "ECENS", which tells
+        // nobody anything — the panel shows human labels while the keys stay machine-friendly.
+        const LT_MODEL_LABEL = {
+            gfs: 'GFS', ecmwf: 'ECMWF', gefs: 'GEFS', ecens: 'ECMWF ENS',
+            rrfs: 'RRFS', refs: 'REFS', rap: 'RAP', hrrr: 'HRRR',
+        };
+        function ltLabel(m) { return LT_MODEL_LABEL[m] || (m || '').toUpperCase(); }
+
         // Synthetic dropdown entry: not a model, a side-by-side of two of them. It inherits
         // the 6-hourly cycle of its members so the dprog/dt buttons keep working.
         const LT_CMP = '__cmp_gfs_ecmwf__';
@@ -731,8 +739,8 @@
         let ltCmpA = 'gfs', ltCmpB = 'ecmwf';
         function ltCmpSeries() {
             return [
-                { key: ltCmpA, label: (ltCmpA || '').toUpperCase(), color: LT_CMP_COLORS[0], slot: 'A' },
-                { key: ltCmpB, label: (ltCmpB || '').toUpperCase(), color: LT_CMP_COLORS[1], slot: 'B' },
+                { key: ltCmpA, label: ltLabel(ltCmpA), color: LT_CMP_COLORS[0], slot: 'A' },
+                { key: ltCmpB, label: ltLabel(ltCmpB), color: LT_CMP_COLORS[1], slot: 'B' },
             ];
         }
         function ltIsCompare() {
@@ -768,7 +776,7 @@
                 <select onchange="ltSetCmp('${slot}', this.value)"
                         style="padding:3px 6px; border:1px solid ${color}; border-radius:6px;
                                color:${color}; font-weight:700; font-size:0.8rem; background:#fff;">
-                    ${models.map(m => `<option value="${m}"${m === cur ? ' selected' : ''}>${m.toUpperCase()}</option>`).join('')}
+                    ${models.map(m => `<option value="${m}"${m === cur ? ' selected' : ''}>${ltLabel(m)}</option>`).join('')}
                 </select>`;
             host.innerHTML = sel('A', ltCmpA, LT_CMP_COLORS[0])
                 + `<button onclick="ltSwapCmp()" title="Swap A and B"
@@ -878,7 +886,7 @@
             document.getElementById('ltSite').textContent = launchThermo.site || 'KXMR';
             const sel = document.getElementById('ltModel');
             let opts = launchThermo.models
-                .map(m => `<option value="${m}">${m.toUpperCase()}</option>`).join('');
+                .map(m => `<option value="${m}">${ltLabel(m)}</option>`).join('');
             // Compare needs any two models; seed the pair with whatever's actually present.
             const avail = launchThermo.models || [];
             if (avail.length >= 2) {
@@ -1319,7 +1327,8 @@
             const rows = (thermo.by_model && thermo.by_model[model]) || [];
             const ens = (rows[0] && /(\d+)-mem/.exec(rows[0].engine || '')) ;
             const ensNote = ens ? `<div style="font-size:0.78rem; color:#475569; margin:2px 0 8px;">${
-                (document.getElementById('ltModel').value || '').toUpperCase()} = ${ens[1]}-member ensemble (mean of per-member indices, not the mean sounding).</div>` : '';
+                ltLabel(model)} = ${ens[1]}-member ensemble (mean of per-member indices, not the mean sounding).${
+                model === 'ecens' ? ' Perturbed members only — the ECMWF open-data tier publishes no control member at pressure levels. Anvil flow is blank: the 300\u2013150 mb levels are deliberately not fetched, which keeps this column affordable.' : ''}</div>` : '';
             const pctColor = (v) => {
                 // low percentiles = calm/dry/stable, high = moist/unstable -> escalate cool->red
                 if (v == null) return null;
