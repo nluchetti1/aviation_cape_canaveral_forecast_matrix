@@ -27,6 +27,8 @@ import os
 import re
 import requests
 import concurrent.futures
+import threading
+import random
 import logging
 import pygrib
 import numpy as np
@@ -49,6 +51,28 @@ STATIONS = ["kdab", "kxmr", "kmlb", "kfpr", "kpbi"]
 MODELS = ["gfs", "rap", "hrrr", "ecmwf"]
 BUFKIT_MODELS = ["gfs", "rap", "hrrr"]
 
+# ---- PSU BUFKIT politeness ------------------------------------------------------------
+# PSU's BUFKIT server throttles hard, and when a burst of parallel requests arrives from a
+# single IP (exactly what a GitHub Actions runner looks like) it stops answering altogether:
+# every in-flight request read-times-out at the same instant, then subsequent ones can't even
+# open a connection. Four things keep us under its radar:
+#   1. LOW CONCURRENCY, enforced by a semaphore rather than just a small pool, so the cap
+#      holds no matter how the executor is sized.
+#   2. A BROWSER USER-AGENT. The default python-requests UA gets dropped on the floor.
+#   3. A JITTERED STAGGER before each request, so 15 tasks don't align into a burst.
+#   4. EXPONENTIAL BACKOFF WITH JITTER, so retries don't fire in lockstep and re-trigger
+#      the same throttle that caused the first failure.
+BUFKIT_MAX_CONCURRENCY = 2      # simultaneous connections to PSU. Do not raise casually.
+BUFKIT_ATTEMPTS = 4             # total tries per station-model
+BUFKIT_CONNECT_TIMEOUT = 12     # seconds to establish the TCP connection
+BUFKIT_READ_TIMEOUT = 45        # seconds to receive the body once connected
+BUFKIT_STAGGER_S = (0.4, 1.8)   # random pre-request pause, seconds
+BUFKIT_BACKOFF_BASE_S = 4.0     # first retry waits ~4 s, then ~8, ~16 (x0.6-1.4 jitter)
+BUFKIT_USER_AGENT = ("Mozilla/5.0 (X11; Linux x86_64; rv:120.0) "
+                     "Gecko/20100101 Firefox/120.0")
+# Hard gate shared by every worker thread.
+_BUFKIT_GATE = threading.Semaphore(BUFKIT_MAX_CONCURRENCY)
+
 # ---- Low-Level Wind Shear (LLWS) -----------------------------------------------------------
 # TAF convention: LLWS is carried in a forecast when the vector wind difference through the
 # lowest 2,000 ft AGL reaches 20 kt. The group reads WSddd/dddffKT, where ddd is the height of
@@ -65,6 +89,31 @@ ECMWF_MAX_FH = 144        # forecast hours to ingest. IFS open-data is 3-hourly 
                           # 6-hourly, which this step list would silently miss), so 144 is the
                           # natural stop.
 ECMWF_LEVELS_HPA = [1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100]
+
+# ---- ECMWF ENS ensemble column for the 10Z panel (IFS ENS 0.25 deg, open data) --------------
+# Panel-only, exactly like GEFS: a second global ensemble to read against GEFS at day 3+.
+#
+# THREE THINGS THE LIVE PROBE ESTABLISHED, all of which shape the settings below:
+#   1. The CONTROL member (type="cf") has no pressure-level entries in the open-data tier —
+#      a cf request errors with "Cannot find index entries". So this is 10 PERTURBED members
+#      (pf 1..10) with no control. For airmass indices that's statistically fine; it just
+#      differs from GEFS, which is c00 + p01..p14.
+#   2. Every one of t/r/u/v is published on the levels we need, so nothing is approximated.
+#   3. The ECMWF portal was FASTER than both cloud mirrors (AWS returned 503 Slow Down at
+#      0.2 MB/s vs 2.4 MB/s direct), so this deliberately reuses ECMWF_SOURCE.
+ECMWF_ENS_ENABLED = True
+ECMWF_ENS_MEMBERS = 10        # perturbed members pf 1..N (no control; see above)
+# Capped to match the HRES column. Also the exact limit of the 06/18Z ENS runs, so every
+# cycle is usable rather than only the deep 00/12Z ones.
+ECMWF_ENS_MAX_FH = 144
+# Six levels, no upper set. That drops the 300-150 mb anvil flow for this column (the panel
+# renders it as an em dash) and cuts the fetch ~40%. Everything else the panel shows —
+# Thompson, PWAT, 700-500 RH, 1000-700 mean flow, regime, Cizek lightning — is unaffected.
+ECMWF_ENS_LEVELS_HPA = [1000, 925, 850, 700, 600, 500]
+ECMWF_ENS_PARAMS = ["t", "r", "u", "v"]   # gh omitted; heights fall back to barometric
+# ENS advances every 6 h while this pipeline runs hourly, so rows are cached against the
+# cycle and only refetched when a new one posts (~0.9 GB / 6 min when it does).
+ECMWF_ENS_CACHE_ENABLED = True
 
 # Per-member REFS launch-thermo (KXMR panel): pull each ensemble member's full isobaric sounding at
 # XMR for the 10Z hours, compute the indices per member, and average the RESULTS — the valid way to
@@ -1082,25 +1131,127 @@ def parse_time_series_bufkit(bufkit_text):
 
 
 def fetch_station_model(session, stn, model):
+    """Pull one station-model BUFKIT profile from PSU, politely.
+
+    Returns (stn, model, hourly_data). An empty dict means the fetch failed or the file
+    wasn't posted; run_pipeline will try to carry the previous run's column forward rather
+    than render a blank column.
+    """
     download_id = "xmr" if stn == "kxmr" else stn
     model_prefix = "gfs3" if model == "gfs" else model
-    url = f"http://www.meteo.psu.edu/bufkit/data/{model.upper()}/latest/{model_prefix}_{download_id}.buf"
-    # PSU's BUFKIT server intermittently times out; retry a few times with backoff and a
-    # longer timeout before giving up, so a transient hiccup doesn't drop a whole column.
-    for attempt in range(3):
-        try:
-            response = session.get(url, timeout=25)
-            if response.status_code == 200:
-                return stn, model, parse_time_series_bufkit(response.text)
-            break
-        except Exception as e:
-            if attempt < 2:
-                import time as _t
-                _t.sleep(2 * (attempt + 1))
-                continue
-            logging.error(f"Error fetching {stn} {model} after retries: {e}")
+    # https, not http: PSU redirects anyway, and the redirect costs an extra round trip
+    # against a server that is already rate-limiting us.
+    url = (f"https://www.meteo.psu.edu/bufkit/data/{model.upper()}/latest/"
+           f"{model_prefix}_{download_id}.buf")
+    headers = {
+        "User-Agent": BUFKIT_USER_AGENT,
+        "Accept": "text/plain,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
+    last = "no attempt made"
+    with _BUFKIT_GATE:
+        # Stagger inside the gate so the two permitted slots don't fire simultaneously.
+        time.sleep(random.uniform(*BUFKIT_STAGGER_S))
+        for attempt in range(BUFKIT_ATTEMPTS):
+            try:
+                r = session.get(url, headers=headers,
+                                timeout=(BUFKIT_CONNECT_TIMEOUT, BUFKIT_READ_TIMEOUT))
+                if r.status_code == 200:
+                    body = r.text
+                    if body and "STID" in body:
+                        data = parse_time_series_bufkit(body)
+                        if data:
+                            return stn, model, data
+                        last = f"200 OK ({len(body)} B) but no parseable profiles"
+                    else:
+                        # A throttle page or truncated body can still come back 200.
+                        last = f"200 OK but body is not BUFKIT ({len(body or '')} B)"
+                elif r.status_code == 404:
+                    # Genuinely not posted (some models skip some sites). Don't burn retries.
+                    logging.warning(f"BUFKIT {stn}/{model}: 404, file not posted.")
+                    return stn, model, {}
+                elif r.status_code in (403, 429, 500, 502, 503, 504):
+                    # These are exactly the throttle codes worth backing off on — the old
+                    # code `break`-ed here and never retried them.
+                    last = f"HTTP {r.status_code} (throttled)"
+                else:
+                    last = f"HTTP {r.status_code}"
+            except Exception as e:
+                last = f"{type(e).__name__}"
+
+            if attempt < BUFKIT_ATTEMPTS - 1:
+                wait = BUFKIT_BACKOFF_BASE_S * (2 ** attempt) * random.uniform(0.6, 1.4)
+                logging.info(f"BUFKIT {stn}/{model}: {last}; retry "
+                             f"{attempt + 2}/{BUFKIT_ATTEMPTS} in {wait:.1f}s")
+                time.sleep(wait)
+
+    logging.error(f"BUFKIT {stn}/{model} failed after {BUFKIT_ATTEMPTS} attempts ({last}).")
     return stn, model, {}
 
+
+def _row_is_future(row_key, now_utc):
+    """True when a 'DD/HH' row key is at or after the current hour (same wrap-safe rule
+    run_pipeline uses to trim the live BUFKIT rows)."""
+    try:
+        d, h = map(int, row_key.split("/"))
+    except Exception:
+        return True
+    if d < now_utc.day and now_utc.day - d < 25:
+        return False
+    if d == now_utc.day and h < now_utc.hour:
+        return False
+    return True
+
+
+def _prior_run_station_data():
+    """Newest stored run's station block from history.json, as (data, timestamp)."""
+    try:
+        with open(HISTORY_FILE, "r") as f:
+            payload = json.load(f)
+        runs = payload.get("runs", []) if isinstance(payload, dict) else payload
+        for r in (runs or []):
+            d = (r or {}).get("data") or {}
+            if d:
+                return d, r.get("timestamp")
+    except Exception:
+        pass
+    return {}, None
+
+
+def carry_forward_missing(sounding_matrix, models_to_check=None):
+    """When PSU throttles us out of an entire airport column, reuse the newest stored rows
+    for that (station, model) instead of rendering a blank column. Only EMPTY columns are
+    filled — a partial fetch is never overwritten — and only forecast hours still in the
+    future are carried, so nothing rots into the past. Each carried profile is tagged with
+    the run it came from, which the frontend surfaces as a stale marker.
+
+    A carried BUFKIT column is a genuinely older forecast, not a nowcast: treat it as the
+    last known good run, and note that RRFS/REFS/ECMWF in the same row are current."""
+    prior, ts = _prior_run_station_data()
+    if not prior:
+        return 0
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    filled = 0
+    for stn, mdls in sounding_matrix.items():
+        for mdl in (models_to_check or list(mdls.keys())):
+            if mdls.get(mdl):
+                continue  # this column fetched fine
+            old = ((prior.get(stn) or {}).get(mdl)) or {}
+            carried = {}
+            for rk, prof in old.items():
+                if isinstance(prof, dict) and _row_is_future(rk, now_utc):
+                    p = dict(prof)
+                    p["stale"] = p.get("stale") or ts or "a previous run"
+                    carried[rk] = p
+            if carried:
+                mdls[mdl] = carried
+                filled += 1
+                logging.warning(f"Carried forward {stn}/{mdl}: {len(carried)} future hours "
+                                f"from {ts} (BUFKIT fetch returned nothing this run).")
+    if filled:
+        logging.warning(f"{filled} BUFKIT column(s) carried forward and flagged stale.")
+    return filled
 
 # ---------------------------------------------------------------------------
 # Launch-pad soundings derived from raw isobaric GRIB2 (GFS / RAP / HRRR)
@@ -2259,8 +2410,171 @@ def fetch_refs_member_thermo(site="kxmr", assess_hour=10):
     return out
 
 
+
+def _ecmwf_ens_profiles_by_member(filepath, lat, lon, levels=None):
+    """Split one multi-member ENS GRIB file into per-member point profiles.
+
+    A single ENS file holds every requested member for a step. build_pad_profiles_from_grib()
+    has no notion of members, so it would let each member overwrite the last and return only
+    the final one's column. This walks the file grouping by perturbationNumber, then hands
+    each member's level dict to the same _grib_levels_to_layers() everything else uses, so
+    the profile schema stays identical.
+
+    Returns {member_number: profile_layers}.
+    """
+    allowed = set(levels if levels is not None else ECMWF_ENS_LEVELS_HPA)
+    per_member = {}
+    iy = ix = None
+    try:
+        grbs = pygrib.open(filepath)
+        for grb in grbs:
+            try:
+                if getattr(grb, "typeOfLevel", "") != "isobaricInhPa":
+                    continue
+                level = grb.level
+                # Filter to the levels we actually REQUESTED, not the wider pad set. If the
+                # server ever returns a stray upper level, letting it through would hand
+                # compute_launch_thermo a single-level "anvil flow" — a plausible-looking
+                # number derived from one level, which is worse than the honest em dash.
+                if level not in allowed:
+                    continue
+                short = getattr(grb, "shortName", "")
+                mem = getattr(grb, "perturbationNumber", None)
+            except Exception:
+                continue
+            if short in ("t", "TMP"):
+                field = "t"
+            elif short in ("r", "RH"):
+                field = "rh"
+            elif short in ("gh", "HGT"):
+                field = "hgt"
+            elif short in ("u", "UGRD"):
+                field = "u"
+            elif short in ("v", "VGRD"):
+                field = "v"
+            else:
+                continue
+            if mem is None:
+                continue
+            if iy is None:
+                # Nearest grid cell, resolved once from the first usable message.
+                glats, glons = grb.latlons()
+                gl = np.where(glons > 180, glons - 360.0, glons)
+                d = (glats - lat) ** 2 + (gl - lon) ** 2
+                iy, ix = np.unravel_index(np.argmin(d), d.shape)
+            per_member.setdefault(mem, {}).setdefault(level, {})[field] = float(grb.values[iy, ix])
+        grbs.close()
+    except Exception as e:
+        logging.error(f"ECMWF ENS GRIB parse failed for {os.path.basename(filepath)}: {e}")
+        return {}
+
+    out = {}
+    for mem, levels in per_member.items():
+        layers = _grib_levels_to_layers(levels)
+        if layers:
+            out[mem] = layers
+    return out
+
+
+def fetch_ecmwf_ens_member_thermo(site="kxmr", assess_hour=10, cache=None):
+    """ECMWF ENS column for the 10Z panel: pull each perturbed member's sounding at the site,
+    compute the indices PER MEMBER, and average the RESULTS via _ensemble_thermo_row — never
+    from an ensemble-mean sounding, whose moisture structure is smeared.
+
+    One retrieve per forecast step covering all members at once (10 requests would pay the
+    index lookup ten times over for the same bytes). Returns (rows, cycle_key); `cache` may be
+    a previous {"cycle":..., "rows":...} and is returned untouched when the cycle hasn't moved.
+    """
+    if not ECMWF_ENS_ENABLED:
+        return {}, None
+    sc = STN_COORDS.get(site)
+    if not sc:
+        return {}, None
+    try:
+        from ecmwf.opendata import Client
+    except Exception as e:
+        logging.warning(f"ecmwf-opendata not installed; skipping ECMWF ENS column ({e}).")
+        return {}, None
+
+    client = Client(source=ECMWF_SOURCE)
+    members = list(range(1, max(1, ECMWF_ENS_MEMBERS) + 1))
+
+    # Which cycle is newest? latest() probes the index rather than guessing at latency.
+    try:
+        init_dt = client.latest(stream="enfo", type="pf", levtype="pl",
+                                param="t", number=1)
+    except Exception as e:
+        logging.error(f"ECMWF ENS: could not resolve latest cycle ({e}); skipping column.")
+        return {}, None
+    if init_dt is None:
+        return {}, None
+    cycle_key = init_dt.strftime("%Y%m%d%H")
+
+    if ECMWF_ENS_CACHE_ENABLED and isinstance(cache, dict) \
+            and cache.get("cycle") == cycle_key and cache.get("rows"):
+        logging.info(f"ECMWF ENS: cycle {cycle_key} unchanged, reusing {len(cache['rows'])} cached rows.")
+        return cache["rows"], cycle_key
+
+    # ENS is 3-hourly to 144 h. Take the step nearest the assessment hour on each forecast
+    # day, within ASSESS_HOUR_TOL — same rule the GEFS column uses.
+    best_by_day = {}
+    for fh in range(3, ECMWF_ENS_MAX_FH + 1, 3):
+        v = init_dt + datetime.timedelta(hours=fh)
+        diff = abs(v.hour - assess_hour)
+        if diff > ASSESS_HOUR_TOL:
+            continue
+        key = v.strftime("%Y%m%d")
+        if key not in best_by_day or diff < best_by_day[key][0]:
+            best_by_day[key] = (diff, fh, v)
+    picks = sorted(best_by_day.values(), key=lambda x: x[1])
+    if not picks:
+        logging.warning("ECMWF ENS: no forecast step landed near the assessment hour.")
+        return {}, cycle_key
+
+    out = {}
+    t_start = time.time()
+    total_mb = 0.0
+    for (_diff, fh, valid) in picks:
+        rk = f"{valid.day:02d}/{valid.hour:02d}"
+        local = os.path.join(CACHE_DIR, f"ecens_{cycle_key}_f{fh:03d}.grib2")
+        try:
+            client.retrieve(
+                stream="enfo", type="pf", number=members, step=fh,
+                levtype="pl", levelist=ECMWF_ENS_LEVELS_HPA,
+                param=ECMWF_ENS_PARAMS, target=local,
+            )
+            total_mb += os.path.getsize(local) / 1e6
+            profiles = _ecmwf_ens_profiles_by_member(local, sc["lat"], sc["lon"])
+            per = []
+            for _mem, layers in sorted(profiles.items()):
+                th = compute_launch_thermo(layers)
+                if th:
+                    per.append(th)
+            if per:
+                out[rk] = _ensemble_thermo_row(per)
+        except Exception as e:
+            logging.warning(f"ECMWF ENS f{fh:03d} ({rk}): {type(e).__name__}: {e}")
+        finally:
+            if os.path.exists(local):
+                try:
+                    os.remove(local)
+                except Exception:
+                    pass
+
+    got = max((r.get("n", 0) for r in out.values()), default=0)
+    logging.info(f"ECMWF ENS thermo: cycle {cycle_key}, {got}/{len(members)} members, "
+                 f"{len(out)} rows near {assess_hour}Z at {site.upper()} "
+                 f"({total_mb:.0f} MB in {time.time() - t_start:.0f}s, index-of-member mean).")
+
+    # Never cache a badly degraded fetch — the cache is keyed to a 6-hourly cycle, so a
+    # partial result would be frozen in for hours. cycle_key=None forces a retry next run.
+    if out and got < max(2, len(members) // 2):
+        logging.warning(f"ECMWF ENS: only {got}/{len(members)} members returned — not caching.")
+        return out, None
+    return out, cycle_key
+
 def build_launch_thermo(combined_data, site="kxmr", assess_hour=10, refs_member_rows=None,
-                        gefs_member_rows=None):
+                        gefs_member_rows=None, ecens_member_rows=None):
     """Assemble the launch-thermo panel: for each model that has a KXMR sounding, one row per
     forecast day at the assessment hour (10Z), with mean flow, regime, Thompson Index (+percentile),
     and PWAT (+percentile). Returns {"site","hour","models":[...],"by_model":{model:[rows]}}."""
@@ -2375,9 +2689,10 @@ def build_launch_thermo(combined_data, site="kxmr", assess_hour=10, refs_member_
 
     _add_ensemble("refs", refs_member_rows)
     _add_ensemble("gefs", gefs_member_rows)
+    _add_ensemble("ecens", ecens_member_rows)
 
     # order models: put the ones with the most rows first, stable-ish preferred order
-    pref = ["gfs", "ecmwf", "gefs", "rrfs", "refs", "rap", "hrrr"]
+    pref = ["gfs", "ecmwf", "gefs", "ecens", "rrfs", "refs", "rap", "hrrr"]
     models = sorted(by_model.keys(), key=lambda m: (pref.index(m) if m in pref else 99, m))
 
     # Dump the EXACT feature values fed to the Cizek RF so they can be typed straight into the
@@ -2423,6 +2738,7 @@ def generate_aviation_dashboard(stations, models, current_sounding_matrix, time_
     history_runs = []
     prior_thermo_runs = []
     prior_gefs_cache = None
+    prior_ecens_cache = None
     if os.path.exists(HISTORY_FILE):
         try:
             with open(HISTORY_FILE, "r") as f:
@@ -2432,6 +2748,7 @@ def generate_aviation_dashboard(stations, models, current_sounding_matrix, time_
             if isinstance(existing, dict):
                 prior_thermo_runs = existing.get("launch_thermo_runs", []) or []
                 prior_gefs_cache = existing.get("gefs_cache") or None
+                prior_ecens_cache = existing.get("ecens_cache") or None
         except Exception:
             history_runs = []
 
@@ -2480,9 +2797,16 @@ def generate_aviation_dashboard(stations, models, current_sounding_matrix, time_
         logging.error(f"GEFS member thermo fetch failed: {e}")
         gefs_member_rows, gefs_cycle_key = {}, None
     try:
+        ecens_member_rows, ecens_cycle_key = fetch_ecmwf_ens_member_thermo(
+            site="kxmr", assess_hour=10, cache=prior_ecens_cache)
+    except Exception as e:
+        logging.error(f"ECMWF ENS member thermo fetch failed: {e}")
+        ecens_member_rows, ecens_cycle_key = {}, None
+    try:
         launch_thermo = build_launch_thermo(combined_data, site="kxmr", assess_hour=10,
                                             refs_member_rows=refs_member_rows,
-                                            gefs_member_rows=gefs_member_rows)
+                                            gefs_member_rows=gefs_member_rows,
+                                            ecens_member_rows=ecens_member_rows)
         logging.info(f"Launch thermo: {len(launch_thermo['models'])} models, "
                      f"rows/model={ {m: len(launch_thermo['by_model'][m]) for m in launch_thermo['models']} }")
     except Exception as e:
@@ -2516,6 +2840,8 @@ def generate_aviation_dashboard(stations, models, current_sounding_matrix, time_
         # until a new cycle posts.
         "gefs_cache": ({"cycle": gefs_cycle_key, "rows": gefs_member_rows}
                        if (GEFS_CACHE_ENABLED and gefs_cycle_key and gefs_member_rows) else None),
+        "ecens_cache": ({"cycle": ecens_cycle_key, "rows": ecens_member_rows}
+                        if (ECMWF_ENS_CACHE_ENABLED and ecens_cycle_key and ecens_member_rows) else None),
         # Monthly percentile distributions, shipped so the panel can draw box-and-whisker plots
         # from exactly the same numbers the percentile badges use.
         "climo": {
@@ -2542,7 +2868,15 @@ def run_pipeline():
 
     temp_time_rows_set = set()
     with requests.Session() as session:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        # Our own backoff handles retries; let urllib3 fail fast rather than silently
+        # stacking a second retry layer on top of an already-throttled host.
+        session.mount("https://", requests.adapters.HTTPAdapter(
+            pool_connections=BUFKIT_MAX_CONCURRENCY,
+            pool_maxsize=BUFKIT_MAX_CONCURRENCY,
+            max_retries=0))
+        # The pool is sized to the semaphore so we don't park a dozen threads on a gate
+        # they can't pass; _BUFKIT_GATE is the hard guarantee either way.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=BUFKIT_MAX_CONCURRENCY) as executor:
             futures = [
                 executor.submit(fetch_station_model, session, s, m)
                 for s in STATIONS
@@ -2553,6 +2887,16 @@ def run_pipeline():
                 if data:
                     sounding_matrix[stn][model] = data
                     temp_time_rows_set.update(data.keys())
+
+    ok = sum(1 for s in STATIONS for m in BUFKIT_MODELS if sounding_matrix[s].get(m))
+    total = len(STATIONS) * len(BUFKIT_MODELS)
+    logging.info(f"BUFKIT: {ok}/{total} station-model columns fetched.")
+    if ok < total:
+        # PSU throttling should degrade the board, not blank it.
+        carry_forward_missing(sounding_matrix, models_to_check=BUFKIT_MODELS)
+        for s in STATIONS:
+            for m in BUFKIT_MODELS:
+                temp_time_rows_set.update((sounding_matrix[s].get(m) or {}).keys())
 
     time_rows = sorted(list(temp_time_rows_set))
     now_utc = datetime.datetime.now(datetime.timezone.utc)
